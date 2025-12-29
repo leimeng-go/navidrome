@@ -33,3 +33,4 @@ AGENTS.md
 *.test
 *.wasm
 openspec/
+node_modules/

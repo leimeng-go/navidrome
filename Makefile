@@ -70,20 +70,21 @@ setup: check_env download-deps install-golangci-lint setup-git ##@1_Run_First In
 	@(cd ./ui && npm ci)  # npm ci 比 npm install 更适合 CI/CD（根据 package-lock.json 精确安装）
 .PHONY: setup  # 声明为伪目标，不对应实际文件
 
-# 启动开发模式：同时启动前后端，支持热重载
+# 启动开发模式：同时启动前后端，支持热重载，依赖check_env
+# 命令参数说明：
+# ND_ENABLEINSIGHTSCOLLECTOR="false" - 禁用遥测数据收集
+# npx foreman - 使用 foreman 进程管理器
+# -j Procfile.dev - 指定进程配置文件
+# -p 4533 - 前端端口 4533，后端自动使用 4633（+100）
 dev: check_env   ##@Development Start Navidrome in development mode, with hot-reload for both frontend and backend
-	# ND_ENABLEINSIGHTSCOLLECTOR="false" - 禁用遥测数据收集
-	# npx foreman - 使用 foreman 进程管理器
-	# -j Procfile.dev - 指定进程配置文件
-	# -p 4533 - 前端端口 4533，后端自动使用 4633（+100）
 	ND_ENABLEINSIGHTSCOLLECTOR="false" npx foreman -j Procfile.dev -p 4533 start
 .PHONY: dev
 
 # 只启动后端开发服务器（需要先构建前端）
+# reflex - Go 的文件监控和自动重启工具（类似 nodemon）
+# -d none - 禁用默认延迟，立即重启
+# -c reflex.conf - 使用配置文件定义监控规则
 server: check_go_env buildjs ##@Development Start the backend in development mode
-	# reflex - Go 的文件监控和自动重启工具（类似 nodemon）
-	# -d none - 禁用默认延迟，立即重启
-	# -c reflex.conf - 使用配置文件定义监控规则
 	@ND_ENABLEINSIGHTSCOLLECTOR="false" go tool reflex -d none -c reflex.conf
 .PHONY: server
 
@@ -97,12 +98,12 @@ stop: ##@Development Stop development servers (UI and backend)
 .PHONY: stop
 
 # 监控模式运行测试：代码变化时自动重新运行测试
+# ginkgo - Go 的 BDD 测试框架
+# watch - 监控文件变化
+# -tags=netgo - 使用纯 Go 网络库（静态编译）
+# -notify - 显示系统通知
+# ./... - 递归测试所有子目录
 watch: ##@Development Start Go tests in watch mode (re-run when code changes)
-	# ginkgo - Go 的 BDD 测试框架
-	# watch - 监控文件变化
-	# -tags=netgo - 使用纯 Go 网络库（静态编译）
-	# -notify - 显示系统通知
-	# ./... - 递归测试所有子目录
 	go tool ginkgo watch -tags=netgo -notify ./...
 .PHONY: watch
 
@@ -118,9 +119,9 @@ testall: test-race test-i18n test-js ##@Development Run Go and JS tests
 .PHONY: testall
 
 # 运行 Go 测试并启用竞态检测器（检测并发安全问题）
+# -race - 启用竞态检测器（会降低性能但能发现并发 bug）
+# -shuffle=on - 随机化测试顺序（避免依赖测试执行顺序）
 test-race: ##@Development Run Go tests with race detector
-	# -race - 启用竞态检测器（会降低性能但能发现并发 bug）
-	# -shuffle=on - 随机化测试顺序（避免依赖测试执行顺序）
 	go test -tags netgo -race -shuffle=on  $(PKG)
 .PHONY: test-race
 
@@ -171,40 +172,32 @@ install-golangci-lint: ##@Development Install golangci-lint if not present
 .PHONY: install-golangci-lint
 
 # 运行 Go 代码检查（自动安装 golangci-lint）
+# -v - 显示详细输出
+# --timeout 5m - 设置超时时间为 5 分钟
 lint: install-golangci-lint ##@Development Lint Go code
-	# -v - 显示详细输出
-	# --timeout 5m - 设置超时时间为 5 分钟
 	PATH=$$PATH:./bin golangci-lint run -v --timeout 5m
 .PHONY: lint
 
 # 运行所有代码检查：Go + 前端格式化 + 前端 ESLint
 lintall: lint ##@Development Lint Go and JS code
-	# 检查前端代码格式（如果失败，提示使用 prettier 修复）
 	@(cd ./ui && npm run check-formatting) || (echo "\n\nPlease run 'npm run prettier' to fix formatting issues." && exit 1)
-	# 运行 ESLint 检查前端代码
 	@(cd ./ui && npm run lint)
 .PHONY: lintall
 
 # 格式化所有代码：前端 + Go
 format: ##@Development Format code
-	# 使用 Prettier 格式化前端代码
 	@(cd ./ui && npm run prettier)
-	# 使用 goimports 格式化 Go 代码（自动整理 import）
-	# 排除自动生成的文件：_gen.go 和 .pb.go
 	@go tool goimports -w `find . -name '*.go' | grep -v _gen.go$$ | grep -v .pb.go$$`
-	# 整理 go.mod，移除未使用的依赖
 	@go mod tidy
 .PHONY: format
 
 # 更新依赖注入代码（使用 google/wire）
 wire: check_go_env ##@Development Update Dependency Injection
-	# wire gen - 根据 wire.go 文件生成依赖注入代码
 	go tool wire gen -tags=netgo ./...
 .PHONY: wire
 
 # 更新快照测试（用于测试 API 响应的结构是否变化）
 snapshots: ##@Development Update (GoLang) Snapshot tests
-	# UPDATE_SNAPSHOTS=true - 更新快照而不是比较
 	UPDATE_SNAPSHOTS=true go tool ginkgo ./server/subsonic/responses/...
 .PHONY: snapshots
 
@@ -212,7 +205,6 @@ snapshots: ##@Development Update (GoLang) Snapshot tests
 # 用法：make migration-sql name=add_user_table
 migration-sql: ##@Development Create an empty SQL migration file
 	@if [ -z "${name}" ]; then echo "Usage: make migration-sql name=name_of_migration_file"; exit 1; fi
-	# 使用 goose 工具创建迁移文件
 	go run github.com/pressly/goose/v3/cmd/goose@latest -dir db/migrations create ${name} sql
 .PHONY: migration
 
@@ -231,16 +223,11 @@ setup-dev: setup
 setup-git: ##@Development Setup Git hooks (pre-commit and pre-push)
 	@echo Setting up git hooks
 	@mkdir -p .git/hooks
-	# 创建符号链接，指向 git/ 目录下的钩子脚本
-	# 这样更新钩子时无需重新复制
 	@(cd .git/hooks && ln -sf ../../git/* .)
 .PHONY: setup-git
 
 # 构建完整项目：前端 + 后端
 build: check_go_env buildjs ##@Build Build the project
-	# -ldflags - 链接时注入变量（用于显示版本信息）
-	# -X - 设置字符串变量的值
-	# -tags=netgo - 使用纯 Go 网络库，避免 cgo 依赖（生成静态二进制）
 	go build -ldflags="-X github.com/navidrome/navidrome/consts.gitSha=$(GIT_SHA) -X github.com/navidrome/navidrome/consts.gitTag=$(GIT_TAG)" -tags=netgo
 .PHONY: build
 
@@ -250,9 +237,6 @@ buildall: deprecated build
 
 # 构建调试版本：禁用优化和内联，方便使用 delve 调试
 debug-build: check_go_env buildjs ##@Build Build the project (with remote debug on)
-	# -gcflags="all=-N -l" - 编译器参数
-	# -N - 禁用优化
-	# -l - 禁用内联（方便设置断点）
 	go build -gcflags="all=-N -l" -ldflags="-X github.com/navidrome/navidrome/consts.gitSha=$(GIT_SHA) -X github.com/navidrome/navidrome/consts.gitTag=$(GIT_TAG)" -tags=netgo
 .PHONY: debug-build
 
@@ -262,27 +246,24 @@ buildjs: check_node_env ui/build/index.html ##@Build Build only frontend
 
 # 使用 Docker 构建前端（无需本地安装 Node.js）
 docker-buildjs: ##@Build Build only frontend using Docker
-	# --output - 将构建产物复制到本地
-	# --target ui-bundle - 只构建 Dockerfile 中的 ui-bundle 阶段
 	docker build --output "./ui" --target ui-bundle .
 .PHONY: docker-buildjs
 
 # 前端构建规则：当源文件变化时触发
 ui/build/index.html: $(UI_SRC_FILES)
-	# 进入 ui 目录执行 Vite 构建
 	@(cd ./ui && npm run build)
 
 # 列出所有支持的跨平台编译目标
+# 格式化输出平台列表：
+# tr ',' '\n' - translate 字符，将逗号替换为换行符
+#   输入："linux/amd64,linux/arm64,darwin/amd64"
+#   输出：每个平台占一行
+# sort - 按字母顺序排序
+# sed 's/^/    /' - stream editor，在每行行首（^）添加 4 个空格
+#   效果：    linux/amd64
+#         darwin/amd64
 docker-platforms: ##@Cross_Compilation List supported platforms
 	@echo "Supported platforms:"
-	# 格式化输出平台列表：
-	# tr ',' '\n' - translate 字符，将逗号替换为换行符
-	#   输入："linux/amd64,linux/arm64,darwin/amd64"
-	#   输出：每个平台占一行
-	# sort - 按字母顺序排序
-	# sed 's/^/    /' - stream editor，在每行行首（^）添加 4 个空格
-	#   效果：    linux/amd64
-	#         darwin/amd64
 	@echo "$(SUPPORTED_PLATFORMS)" | tr ',' '\n' | sort | sed 's/^/    /'
 	@echo "\nUsage: make PLATFORMS=\"linux/amd64\" docker-build"
 	@echo "       make IMAGE_PLATFORMS=\"linux/amd64\" docker-image"
@@ -290,12 +271,12 @@ docker-platforms: ##@Cross_Compilation List supported platforms
 
 # 使用 Docker Buildx 进行跨平台编译
 # 示例：make docker-build PLATFORMS="linux/amd64,linux/arm64"
+# buildx - Docker 的多平台构建工具
+# --platform - 指定目标平台（可多个）
+# --build-arg - 传递构建参数
+# --output - 将编译产物输出到本地目录
+# --target binary - 只构建到 binary 阶段（不构建完整镜像）
 docker-build: ##@Cross_Compilation Cross-compile for any supported platform (check `make docker-platforms`)
-	# buildx - Docker 的多平台构建工具
-	# --platform - 指定目标平台（可多个）
-	# --build-arg - 传递构建参数
-	# --output - 将编译产物输出到本地目录
-	# --target binary - 只构建到 binary 阶段（不构建完整镜像）
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--build-arg GIT_TAG=${GIT_TAG} \
@@ -307,11 +288,9 @@ docker-build: ##@Cross_Compilation Cross-compile for any supported platform (che
 # 构建 Docker 镜像（多平台）
 # 示例：make docker-image DOCKER_TAG="myregistry/navidrome:v1.0.0"
 docker-image: ##@Cross_Compilation Build Docker image, tagged as `deluan/navidrome:develop`, override with DOCKER_TAG var. Use IMAGE_PLATFORMS to specify target platforms
-	# 验证平台：Docker 镜像不支持 Windows、macOS 和 ARMv5
 	@echo $(IMAGE_PLATFORMS) | grep -q "windows" && echo "ERROR: Windows is not supported for Docker builds" && exit 1 || true
 	@echo $(IMAGE_PLATFORMS) | grep -q "darwin" && echo "ERROR: macOS is not supported for Docker builds" && exit 1 || true
 	@echo $(IMAGE_PLATFORMS) | grep -q "arm/v5" && echo "ERROR: Linux ARMv5 is not supported for Docker builds" && exit 1 || true
-	# 构建多平台镜像并打标签
 	docker buildx build \
 		--platform $(IMAGE_PLATFORMS) \
 		--build-arg GIT_TAG=${GIT_TAG} \
@@ -322,15 +301,11 @@ docker-image: ##@Cross_Compilation Build Docker image, tagged as `deluan/navidro
 
 # 构建 Windows MSI 安装程序（32位 + 64位）
 docker-msi: ##@Cross_Compilation Build MSI installer for Windows
-	# 先编译 Windows 二进制文件
 	make docker-build PLATFORMS=windows/386,windows/amd64
-	# 构建 MSI 打包工具镜像（使用 WiX Toolset）
 	DOCKER_CLI_HINTS=false docker build -q -t navidrome-msi-builder -f release/wix/msitools.dockerfile .
 	@rm -rf binaries/msi
-	# 在容器中运行 MSI 构建脚本
 	docker run -it --rm -v $(PWD):/workspace -v $(PWD)/binaries:/workspace/binaries -e GIT_TAG=${GIT_TAG} \
 		navidrome-msi-builder sh -c "release/wix/build_msi.sh /workspace 386 && release/wix/build_msi.sh /workspace amd64"
-	# 显示生成的 MSI 文件大小
 	@du -h binaries/msi/*.msi
 .PHONY: docker-msi
 
@@ -429,27 +404,26 @@ check_env: check_go_env check_node_env
 .PHONY: check_env
 
 # 检查 Go 环境和版本
+# 版本比较逻辑（详细步骤）：
+# 1. go version | cut -d ' ' -f 3 | cut -c3-
+#    go version     : 输出 "go version go1.23.1 linux/amd64"
+#    cut -d ' ' -f 3 : 按空格分隔，取第3个字段 "go1.23.1"
+#    cut -c3-       : 从第3个字符开始截取（去掉 "go" 前缀）→ "1.23.1"
+# 2. echo "$(GO_VERSION) $$current_go_version"
+#    输出两个版本号，例如："1.25 1.23.1"
+# 3. tr ' ' '\n'
+#    将空格替换为换行，每个版本号占一行
+# 4. sort -V
+#    按版本号排序（-V 表示 version sort，会正确处理 1.9 < 1.10）
+# 5. tail -1
+#    取最后一行（最大的版本号）
+# 6. grep -q "^$${current_go_version}$$"
+#    -q          : 静默模式，不输出内容，只返回退出码
+#    ^...$$      : 匹配整行（^ 行首，$$ 行尾，$$ 是 Makefile 转义）
+#    如果最大版本 = 当前版本，说明版本符合要求
+# 7. || - 逻辑或，如果 grep 失败（当前版本过低），执行后面的命令
 check_go_env:
-	# 检查 go 命令是否存在
 	@(hash go) || (echo "\nERROR: GO environment not setup properly!\n"; exit 1)
-	# 版本比较逻辑（详细步骤）：
-	# 1. go version | cut -d ' ' -f 3 | cut -c3-
-	#    go version     : 输出 "go version go1.23.1 linux/amd64"
-	#    cut -d ' ' -f 3 : 按空格分隔，取第3个字段 "go1.23.1"
-	#    cut -c3-       : 从第3个字符开始截取（去掉 "go" 前缀）→ "1.23.1"
-	# 2. echo "$(GO_VERSION) $$current_go_version"
-	#    输出两个版本号，例如："1.25 1.23.1"
-	# 3. tr ' ' '\n'
-	#    将空格替换为换行，每个版本号占一行
-	# 4. sort -V
-	#    按版本号排序（-V 表示 version sort，会正确处理 1.9 < 1.10）
-	# 5. tail -1
-	#    取最后一行（最大的版本号）
-	# 6. grep -q "^$${current_go_version}$$"
-	#    -q          : 静默模式，不输出内容，只返回退出码
-	#    ^...$$      : 匹配整行（^ 行首，$$ 行尾，$$ 是 Makefile 转义）
-	#    如果最大版本 = 当前版本，说明版本符合要求
-	# 7. || - 逻辑或，如果 grep 失败（当前版本过低），执行后面的命令
 	@current_go_version=`go version | cut -d ' ' -f 3 | cut -c3-` && \
 		echo "$(GO_VERSION) $$current_go_version" | \
 		tr ' ' '\n' | sort -V | tail -1 | \
