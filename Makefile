@@ -136,35 +136,34 @@ test-i18n: ##@Development Validate all translations files
 .PHONY: test-i18n
 
 # 智能安装 golangci-lint：仅在不存在或版本不匹配时安装
+# 检查 golangci-lint 是否已安装（包括 ./bin 目录）
+# PATH=$$PATH:./bin - 临时将 ./bin 加入 PATH 环境变量（$$ 是 Makefile 中的转义）
+# which golangci-lint - 查找命令的完整路径
+# > /dev/null - 将标准输出重定向到 /dev/null（丢弃）
+# 2>&1 - 将标准错误（文件描述符2）重定向到标准输出（文件描述符1）
+# 提取当前版本号：
+# grep -oE '[0-9]+\.[0-9]+\.[0-9]+' - 使用扩展正则表达式匹配版本号
+#   -o : 只输出匹配的部分（而不是整行）
+#   -E : 使用扩展正则表达式
+# head -n1 - 只取第一行（防止多个匹配）
+# 提取要求的版本号（去掉 v 前缀）：
+# sed 's/^v//' - 替换命令，将行首（^）的 v 字符替换为空
+#   例如：v2.7.2 → 2.7.2
+# 比较版本号，不一致则重新安装
+# 如果需要安装，从官方脚本下载
 install-golangci-lint: ##@Development Install golangci-lint if not present
 	@INSTALL=false; \
-	# 检查 golangci-lint 是否已安装（包括 ./bin 目录）
-	# PATH=$$PATH:./bin - 临时将 ./bin 加入 PATH 环境变量（$$ 是 Makefile 中的转义）
-	# which golangci-lint - 查找命令的完整路径
-	# > /dev/null - 将标准输出重定向到 /dev/null（丢弃）
-	# 2>&1 - 将标准错误（文件描述符2）重定向到标准输出（文件描述符1）
 	if PATH=$$PATH:./bin which golangci-lint > /dev/null 2>&1; then \
-		# 提取当前版本号
-		# grep -oE '[0-9]+\.[0-9]+\.[0-9]+' - 使用扩展正则表达式匹配版本号
-		#   -o : 只输出匹配的部分（而不是整行）
-		#   -E : 使用扩展正则表达式
-		# head -n1 - 只取第一行（防止多个匹配）
 		CURRENT_VERSION=$$(PATH=$$PATH:./bin golangci-lint version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1); \
-		# 提取要求的版本号（去掉 v 前缀）
-		# sed 's/^v//' - 替换命令，将行首（^）的 v 字符替换为空
-		#   例如：v2.7.2 → 2.7.2
 		REQUIRED_VERSION=$$(echo "$(GOLANGCI_LINT_VERSION)" | sed 's/^v//'); \
-		# 比较版本号，不一致则重新安装
 		if [ "$$CURRENT_VERSION" != "$$REQUIRED_VERSION" ]; then \
 			echo "Found golangci-lint $$CURRENT_VERSION, but $$REQUIRED_VERSION is required. Reinstalling..."; \
 			rm -f ./bin/golangci-lint; \
 			INSTALL=true; \
 		fi; \
 	else \
-		# 未安装，标记需要安装
 		INSTALL=true; \
 	fi; \
-	# 如果需要安装，从官方脚本下载
 	if [ "$$INSTALL" = "true" ]; then \
 		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; \
 		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s $(GOLANGCI_LINT_VERSION); \
@@ -423,22 +422,22 @@ check_env: check_go_env check_node_env
 #    如果最大版本 = 当前版本，说明版本符合要求
 # 7. || - 逻辑或，如果 grep 失败（当前版本过低），执行后面的命令
 check_go_env:
-	@(hash go) || (echo "\nERROR: GO environment not setup properly!\n"; exit 1)
+	@(hash go) || (printf '\nERROR: GO environment not setup properly!\n' >&2; exit 1)
 	@current_go_version=`go version | cut -d ' ' -f 3 | cut -c3-` && \
 		echo "$(GO_VERSION) $$current_go_version" | \
 		tr ' ' '\n' | sort -V | tail -1 | \
 		grep -q "^$${current_go_version}$$" || \
-		(echo "\nERROR: Please upgrade your GO version\nThis project requires at least the version $(GO_VERSION)"; exit 1)
+		(printf '\nERROR: Please upgrade your GO version\nThis project requires at least version %s\n' "$(GO_VERSION)" >&2; exit 1)
 .PHONY: check_go_env
 
 # 检查 Node.js 环境和版本（逻辑同上）
 check_node_env:
-	@(hash node) || (echo "\nERROR: Node environment not setup properly!\n"; exit 1)
+	@(hash node) || (printf '\nERROR: Node environment not setup properly!\n' >&2; exit 1)
 	@current_node_version=`node --version` && \
 		echo "$(NODE_VERSION) $$current_node_version" | \
 		tr ' ' '\n' | sort -V | tail -1 | \
 		grep -q "^$${current_node_version}$$" || \
-		(echo "\nERROR: Please check your Node version. Should be at least $(NODE_VERSION)\n"; exit 1)
+		(printf '\nERROR: Please check your Node version. Should be at least %s\n' "$(NODE_VERSION)" >&2; exit 1)
 .PHONY: check_node_env
 
 # Git pre-push 钩子：推送前运行所有检查和测试
