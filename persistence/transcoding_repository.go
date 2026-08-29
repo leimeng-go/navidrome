@@ -10,10 +10,15 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+// transcodingRepository 是转码配置仓储。
+// 每条记录定义一种目标格式及其转码命令行。
+// 读取对所有用户开放（播放时需要），但增删改限管理员——
+// 转码配置含可执行命令，属高危配置。
 type transcodingRepository struct {
 	sqlRepository
 }
 
+// NewTranscodingRepository 创建转码配置仓储。
 func NewTranscodingRepository(ctx context.Context, db dbx.Builder) model.TranscodingRepository {
 	r := &transcodingRepository{}
 	r.ctx = ctx
@@ -22,6 +27,7 @@ func NewTranscodingRepository(ctx context.Context, db dbx.Builder) model.Transco
 	return r
 }
 
+// Get 按 ID 读取转码配置。
 func (r *transcodingRepository) Get(id string) (*model.Transcoding, error) {
 	sel := r.newSelect().Columns("*").Where(Eq{"id": id})
 	var res model.Transcoding
@@ -29,10 +35,12 @@ func (r *transcodingRepository) Get(id string) (*model.Transcoding, error) {
 	return &res, err
 }
 
+// CountAll 统计转码配置数量。
 func (r *transcodingRepository) CountAll(qo ...model.QueryOptions) (int64, error) {
 	return r.count(Select(), qo...)
 }
 
+// FindByFormat 按目标格式查找转码配置，播放时据此选择转码方式。
 func (r *transcodingRepository) FindByFormat(format string) (*model.Transcoding, error) {
 	sel := r.newSelect().Columns("*").Where(Eq{"target_format": format})
 	var res model.Transcoding
@@ -40,6 +48,7 @@ func (r *transcodingRepository) FindByFormat(format string) (*model.Transcoding,
 	return &res, err
 }
 
+// Put 写入转码配置，仅管理员可调用。
 func (r *transcodingRepository) Put(t *model.Transcoding) error {
 	if !loggedUser(r.ctx).IsAdmin {
 		return rest.ErrPermissionDenied
@@ -47,6 +56,8 @@ func (r *transcodingRepository) Put(t *model.Transcoding) error {
 	_, err := r.put(t.ID, t)
 	return err
 }
+
+// 以下实现 rest 接口，写操作一律限管理员。
 
 func (r *transcodingRepository) Count(options ...rest.QueryOptions) (int64, error) {
 	return r.count(Select(), r.parseRestOptions(r.ctx, options...))

@@ -23,9 +23,15 @@ import (
 )
 
 var (
+	// ErrAlreadyScanning 表示已有扫描在进行中，本次请求被拒绝。
 	ErrAlreadyScanning = errors.New("already scanning")
 )
 
+// New 创建扫描控制器，它是所有扫描操作的统一入口。
+//
+// 只有进程内扫描才配置限流器：外部扫描进程的进度上报本身已是低频的，
+// 无需再节流。限流用于抑制进度事件的推送频率，
+// 否则大库扫描会向客户端刷出海量消息。
 func New(rootCtx context.Context, ds model.DataStore, cw artwork.CacheWarmer, broker events.Broker,
 	pls core.Playlists, m metrics.Metrics) model.Scanner {
 	c := &controller{
@@ -42,6 +48,8 @@ func New(rootCtx context.Context, ds model.DataStore, cw artwork.CacheWarmer, br
 	return c
 }
 
+// getScanner 依配置选择扫描实现：
+// 外部子进程（默认，可隔离扫描期间的内存占用）或进程内实现。
 func (s *controller) getScanner() scanner {
 	if conf.Server.DevExternalScanner {
 		return &scannerExternal{}
@@ -52,6 +60,9 @@ func (s *controller) getScanner() scanner {
 // CallScan starts an in-process scan of specific library/folder pairs.
 // If targets is empty, it scans all libraries.
 // This is meant to be called from the command line (see cmd/scan.go).
+//
+// CallScan 在当前进程内发起扫描，供命令行调用。
+// 命令行场景无需预热封面缓存（进程随即退出），故传入空实现。
 func CallScan(ctx context.Context, ds model.DataStore, pls core.Playlists, fullScan bool, targets []model.ScanTarget) (<-chan *ProgressInfo, error) {
 	release, err := lockScan(ctx)
 	if err != nil {
@@ -69,10 +80,14 @@ func CallScan(ctx context.Context, ds model.DataStore, pls core.Playlists, fullS
 	return progress, nil
 }
 
+// IsScanning 返回当前是否有扫描在进行。
 func IsScanning() bool {
 	return running.Load()
 }
 
+// ProgressInfo 是扫描过程中上报的一条进度消息。
+// 同一结构承载多种含义：普通进度、警告、错误、变更标记，
+// 由接收方按字段判别（见 controller.trackProgress）。
 type ProgressInfo struct {
 	LibID           int
 	FileCount       uint32
@@ -81,16 +96,19 @@ type ProgressInfo struct {
 	ChangesDetected bool
 	Warning         string
 	Error           string
-	ForceUpdate     bool
+	ForceUpdate     bool // 绕过限流，强制推送本条进度
 }
 
 // scanner defines the interface for different scanner implementations.
 // This allows for swapping between in-process and external scanners.
+// scanner 抽象扫描实现，使进程内与外部子进程两种方式可互换。
 type scanner interface {
 	// scanFolders performs the actual scanning of folders. If targets is nil, it scans all libraries.
 	scanFolders(ctx context.Context, fullScan bool, targets []model.ScanTarget, progress chan<- *ProgressInfo)
 }
 
+// controller 是扫描的对外门面，负责串行化扫描请求、
+// 汇总进度并向客户端广播事件。
 type controller struct {
 	rootCtx         context.Context
 	ds              model.DataStore
@@ -105,6 +123,7 @@ type controller struct {
 }
 
 // getLastScanTime returns the most recent scan time across all libraries
+// getLastScanTime 返回所有音乐库中最近的一次扫描完成时间。
 func (s *controller) getLastScanTime(ctx context.Context) (time.Time, error) {
 	libs, err := s.ds.Library(ctx).GetAll(model.QueryOptions{
 		Sort:  "last_scan_at",
@@ -123,6 +142,9 @@ func (s *controller) getLastScanTime(ctx context.Context) (time.Time, error) {
 }
 
 // getScanInfo retrieves scan status from the database
+// getScanInfo 从数据库读取扫描类型、耗时与上次错误。
+// 扫描进行中时耗时为「至今」；已结束时用最近完成时间减去开始时间，
+// 得到上一次扫描的实际耗时。
 func (s *controller) getScanInfo(ctx context.Context) (scanType string, elapsed time.Duration, lastErr string) {
 	lastErr, _ = s.ds.Property(ctx).DefaultGet(consts.LastScanErrorKey, "")
 	scanType, _ = s.ds.Property(ctx).DefaultGet(consts.LastScanTypeKey, "")
@@ -146,6 +168,9 @@ func (s *controller) getScanInfo(ctx context.Context) (scanType string, elapsed 
 	return scanType, elapsed, lastErr
 }
 
+// Status 返回扫描状态。
+// 扫描进行中时计数取自内存中的实时累加值；
+// 空闲时改用各库已持久化的统计，避免展示上一次扫描的残留数字。
 func (s *controller) Status(ctx context.Context) (*model.ScannerStatus, error) {
 	lastScanTime, err := s.getLastScanTime(ctx)
 	if err != nil {
@@ -182,6 +207,7 @@ func (s *controller) Status(ctx context.Context) (*model.ScannerStatus, error) {
 	}, nil
 }
 
+// getCounters 汇总各库已持久化的曲目数与文件夹数。
 func (s *controller) getCounters(ctx context.Context) (int64, int64, error) {
 	libs, err := s.ds.Library(ctx).GetAll()
 	if err != nil {
@@ -195,10 +221,18 @@ func (s *controller) getCounters(ctx context.Context) (int64, int64, error) {
 	return count, folderCount, nil
 }
 
+// ScanAll 扫描全部音乐库。
 func (s *controller) ScanAll(requestCtx context.Context, fullScan bool) ([]string, error) {
 	return s.ScanFolders(requestCtx, fullScan, nil)
 }
 
+// ScanFolders 扫描指定的「库 + 目录」，targets 为 nil 时扫描全部。
+//
+// 上下文由 rootCtx 与请求上下文合并而来：
+// 扫描的生命周期应跟随服务而非单次 HTTP 请求（请求可能提前结束），
+// 但又需保留请求中的追踪信息。
+// 扫描本身在独立 goroutine 中运行，主流程转为消费进度并广播事件，
+// 直到进度通道关闭。
 func (s *controller) ScanFolders(requestCtx context.Context, fullScan bool, targets []model.ScanTarget) ([]string, error) {
 	release, err := lockScan(requestCtx)
 	if err != nil {
@@ -250,8 +284,13 @@ func (s *controller) ScanFolders(requestCtx context.Context, fullScan bool, targ
 
 // This is a global variable that is used to prevent multiple scans from running at the same time.
 // "There can be only one" - https://youtu.be/sqcLjcSloXs?si=VlsjEOjTJZ68zIyg
+// 全局互斥标志：同一时刻只允许一次扫描。
+// 用包级变量而非控制器字段，因为命令行入口 CallScan 不经过控制器，
+// 但同样需要参与互斥。
 var running atomic.Bool
 
+// lockScan 尝试获取扫描权，成功则返回释放函数。
+// 已有扫描在进行时返回 ErrAlreadyScanning。
 func lockScan(ctx context.Context) (func(), error) {
 	if !running.CompareAndSwap(false, true) {
 		log.Debug(ctx, "Scanner already running, ignoring request")
@@ -262,6 +301,12 @@ func lockScan(ctx context.Context) (func(), error) {
 	}, nil
 }
 
+// trackProgress 消费进度通道直至关闭，累计计数并向客户端广播状态。
+//
+// 警告与错误只收集不中断：单个目录出问题不应终止整轮扫描，
+// 最终把所有错误合并返回。
+// 文件夹计数只在该条进度含文件时递增，跳过空目录。
+// 普通进度经限流器节流，ForceUpdate 的消息则立即推送。
 func (s *controller) trackProgress(ctx context.Context, progress <-chan *ProgressInfo) ([]string, error) {
 	s.count.Store(0)
 	s.folderCount.Store(0)

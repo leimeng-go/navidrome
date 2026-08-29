@@ -10,6 +10,8 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// playlistTrackRepository 是「某个播放列表内曲目」的仓储，
+// 由 playlistRepository.Tracks 创建，实例与具体列表绑定。
 type playlistTrackRepository struct {
 	sqlRepository
 	playlistId   string
@@ -17,11 +19,15 @@ type playlistTrackRepository struct {
 	playlistRepo *playlistRepository
 }
 
+// dbPlaylistTrack 嵌入 dbMediaFile 复用曲目字段的解析逻辑。
 type dbPlaylistTrack struct {
 	dbMediaFile
 	*model.PlaylistTrack `structs:",flatten"`
 }
 
+// PostScan 先解析曲目本体，再拷贝到 PlaylistTrack。
+// ID 需覆写为 MediaFileID：查询中 playlist_tracks.id 是列表内位置序号，
+// 会盖掉曲目自身的 ID。
 func (t *dbPlaylistTrack) PostScan() error {
 	if err := t.dbMediaFile.PostScan(); err != nil {
 		return err
@@ -39,6 +45,9 @@ func (t dbPlaylistTracks) toModels() model.PlaylistTracks {
 	})
 }
 
+// Tracks 返回指定播放列表的曲目仓储。
+// 构造时即加载列表本身，后续的可写性判断需要它；
+// 列表不存在或无权访问时返回 nil。
 func (r *playlistRepository) Tracks(playlistId string, refreshSmartPlaylist bool) model.PlaylistTrackRepository {
 	p := &playlistTrackRepository{}
 	p.playlistRepo = r
@@ -77,6 +86,7 @@ func (r *playlistRepository) Tracks(playlistId string, refreshSmartPlaylist bool
 	return p
 }
 
+// Count 统计列表内曲目数。
 func (r *playlistTrackRepository) Count(options ...rest.QueryOptions) (int64, error) {
 	query := Select().
 		LeftJoin("media_file f on f.id = media_file_id").
@@ -84,6 +94,7 @@ func (r *playlistTrackRepository) Count(options ...rest.QueryOptions) (int64, er
 	return r.count(query, r.parseRestOptions(r.ctx, options...))
 }
 
+// Read 读取列表中某个位置的曲目，附带当前用户的标注。
 func (r *playlistTrackRepository) Read(id string) (interface{}, error) {
 	userID := loggedUser(r.ctx).ID
 	sel := r.newSelect().
@@ -108,6 +119,7 @@ func (r *playlistTrackRepository) Read(id string) (interface{}, error) {
 	return trk.PlaylistTrack, err
 }
 
+// GetAll 返回列表内全部曲目。
 func (r *playlistTrackRepository) GetAll(options ...model.QueryOptions) (model.PlaylistTracks, error) {
 	tracks, err := r.playlistRepo.loadTracks(r.newSelect(options...), r.playlistId)
 	if err != nil {
@@ -116,6 +128,7 @@ func (r *playlistTrackRepository) GetAll(options ...model.QueryOptions) (model.P
 	return tracks, err
 }
 
+// GetAlbumIDs 返回列表涉及的去重专辑 ID，用于批量获取封面等场景。
 func (r *playlistTrackRepository) GetAlbumIDs(options ...model.QueryOptions) ([]string, error) {
 	query := r.newSelect(options...).Columns("distinct mf.album_id").
 		Join("media_file mf on mf.id = media_file_id").
@@ -140,10 +153,16 @@ func (r *playlistTrackRepository) NewInstance() interface{} {
 	return &model.PlaylistTrack{}
 }
 
+// isTracksEditable 判断能否手工增删曲目：
+// 需有列表写权限，且不是智能列表——智能列表的内容由规则决定，
+// 手工改动会在下次刷新时被覆盖。
 func (r *playlistTrackRepository) isTracksEditable() bool {
 	return r.playlistRepo.isWritable(r.playlistId) && !r.playlist.IsSmartPlaylist()
 }
 
+// Add 把曲目追加到列表末尾。
+// 位置序号从当前最大值 +1 开始；列表为空时 max 为 NULL，
+// NullInt32 取零值后正好从 1 开始。
 func (r *playlistTrackRepository) Add(mediaFileIds []string) (int, error) {
 	if !r.isTracksEditable() {
 		return 0, rest.ErrPermissionDenied
@@ -166,6 +185,8 @@ func (r *playlistTrackRepository) Add(mediaFileIds []string) (int, error) {
 	return len(mediaFileIds), r.playlistRepo.addTracks(r.playlistId, int(res.Max.Int32+1), mediaFileIds)
 }
 
+// addMediaFileIds 按条件查出曲目并追加。
+// 排序保证成批添加时保持专辑内的自然曲序。
 func (r *playlistTrackRepository) addMediaFileIds(cond Sqlizer) (int, error) {
 	sq := Select("id").From("media_file").Where(cond).OrderBy("album_artist, album, release_date, disc_number, track_number")
 	var ids []string
@@ -177,14 +198,19 @@ func (r *playlistTrackRepository) addMediaFileIds(cond Sqlizer) (int, error) {
 	return r.Add(ids)
 }
 
+// AddAlbums 追加整张专辑的曲目。
 func (r *playlistTrackRepository) AddAlbums(albumIds []string) (int, error) {
 	return r.addMediaFileIds(Eq{"album_id": albumIds})
 }
 
+// AddArtists 追加指定专辑艺人的全部曲目。
 func (r *playlistTrackRepository) AddArtists(artistIds []string) (int, error) {
 	return r.addMediaFileIds(Eq{"album_artist_id": artistIds})
 }
 
+// AddDiscs 追加指定碟片的曲目。
+// 碟片需由「专辑 + 发行日期 + 碟号」三者共同定位，
+// 因为同一专辑可能有多个发行版本。
 func (r *playlistTrackRepository) AddDiscs(discs []model.DiscID) (int, error) {
 	if len(discs) == 0 {
 		return 0, nil
@@ -197,6 +223,7 @@ func (r *playlistTrackRepository) AddDiscs(discs []model.DiscID) (int, error) {
 }
 
 // Get ids from all current tracks
+// getTracks 按当前顺序返回列表内全部曲目 ID。
 func (r *playlistTrackRepository) getTracks() ([]string, error) {
 	all := r.newSelect().Columns("media_file_id").Where(Eq{"playlist_id": r.playlistId}).OrderBy("id")
 	var ids []string
@@ -208,6 +235,7 @@ func (r *playlistTrackRepository) getTracks() ([]string, error) {
 	return ids, nil
 }
 
+// Delete 按位置序号删除曲目，删除后重新编号以消除序号空洞。
 func (r *playlistTrackRepository) Delete(ids ...string) error {
 	if !r.isTracksEditable() {
 		return rest.ErrPermissionDenied
@@ -220,6 +248,7 @@ func (r *playlistTrackRepository) Delete(ids ...string) error {
 	return r.playlistRepo.renumber(r.playlistId)
 }
 
+// DeleteAll 清空列表内容。
 func (r *playlistTrackRepository) DeleteAll() error {
 	if !r.isTracksEditable() {
 		return rest.ErrPermissionDenied
@@ -232,6 +261,9 @@ func (r *playlistTrackRepository) DeleteAll() error {
 	return r.playlistRepo.renumber(r.playlistId)
 }
 
+// Reorder 把第 pos 首移动到第 newPos 位（位置从 1 计数）。
+// 做法是取出完整顺序、在内存中移动后整体重写，
+// 比在 SQL 中批量位移序号更直观且不易出错。
 func (r *playlistTrackRepository) Reorder(pos int, newPos int) error {
 	if !r.isTracksEditable() {
 		return rest.ErrPermissionDenied

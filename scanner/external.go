@@ -27,12 +27,23 @@ const (
 //
 // The external process will send progress updates to the main process through its STDOUT, and the main
 // process will forward them to the caller.
+//
+// scannerExternal 以子进程方式运行扫描，避免扫描期间的大量内存占用滞留主进程。
+// 子进程退出后内存由操作系统全额回收，主进程内存曲线得以保持平稳。
 type scannerExternal struct{}
 
 func (s *scannerExternal) scanFolders(ctx context.Context, fullScan bool, targets []model.ScanTarget, progress chan<- *ProgressInfo) {
 	s.scan(ctx, fullScan, targets, progress)
 }
 
+// scan 启动子进程并把它的进度输出转发给调用方。
+//
+// 子进程复用当前可执行文件，以 scan --subprocess 模式运行，
+// 并显式传递配置与数据目录，保证父子进程使用同一份配置。
+//
+// 通过管道以 gob 编码传输进度：二进制格式紧凑，
+// 且能直接还原为结构体，无需自定义解析。
+// 读到 EOF 表示子进程正常结束，其他错误才上报。
 func (s *scannerExternal) scan(ctx context.Context, fullScan bool, targets []model.ScanTarget, progress chan<- *ProgressInfo) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -95,6 +106,8 @@ func (s *scannerExternal) scan(ctx context.Context, fullScan bool, targets []mod
 	}
 }
 
+// wait 等待子进程退出，并把退出状态转化为管道错误，
+// 使读取端能通过 Decode 的错误感知子进程异常终止。
 func (s *scannerExternal) wait(cmd *exec.Cmd, out *io.PipeWriter) {
 	if err := cmd.Wait(); err != nil {
 		var exitErr *exec.ExitError
@@ -112,6 +125,10 @@ func (s *scannerExternal) wait(cmd *exec.Cmd, out *io.PipeWriter) {
 // If the estimated argument length exceeds a threshold, it writes the targets to a temp file
 // and returns the --target-file argument instead.
 // Returns the arguments, a cleanup function to remove any temp file created, and an error if any.
+//
+// targetArguments 构造扫描目标参数。
+// 目标过多时改用临时文件传递，规避操作系统对命令行长度的限制
+// （Windows 约 32KB，此处阈值取 24KB 留出余量）。
 func targetArguments(ctx context.Context, targets []model.ScanTarget, lengthThreshold int) ([]string, func(), error) {
 	var args []string
 

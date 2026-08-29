@@ -21,22 +21,36 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+// artistRepository 是艺人仓储。
+//
+// 艺人与其他实体的显著差别在于统计信息：同一位艺人可跨多个音乐库、
+// 并以多种角色（主唱、作曲、制作人等）出现，
+// 因此统计数据按「库 × 角色」二维存放在 library_artist 表的 JSON 列中，
+// 读取时需按用户可见范围聚合。
 type artistRepository struct {
 	sqlRepository
 	indexGroups utils.IndexGroups
 }
 
+// dbArtist 是 model.Artist 的数据库映射层。
 type dbArtist struct {
 	*model.Artist    `structs:",flatten"`
 	SimilarArtists   string `structs:"-" json:"-"`
 	LibraryStatsJSON string `structs:"-" json:"-"`
 }
 
+// dbSimilarArtist 是相似艺人在 JSON 列中的存储形式，只存 ID 与名字。
 type dbSimilarArtist struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
 }
 
+// PostScan 把按库分组的统计 JSON 聚合为按角色汇总的结果。
+//
+// JSON 结构为 {库ID: {角色: {"m": 曲目数, "a": 专辑数, "s": 字节数}}}，
+// 键名极短是为了压缩存储体积（每位艺人每个库都有一份）。
+// 这里遍历所有库并按角色累加，得到该用户可见范围内的总计；
+// 特殊键 "total" 汇总到艺人的顶层字段。
 func (a *dbArtist) PostScan() error {
 	a.Artist.Stats = make(map[model.Role]model.ArtistStats)
 
@@ -48,6 +62,7 @@ func (a *dbArtist) PostScan() error {
 
 		for _, stats := range rawLibStats {
 			// Sum all libraries roles stats
+			// 跨库累加同一角色的统计
 			for key, stat := range stats {
 				// Aggregate stats into the main Artist.Stats map
 				artistStats := model.ArtistStats{
@@ -63,6 +78,7 @@ func (a *dbArtist) PostScan() error {
 					a.Artist.AlbumCount += artistStats.AlbumCount
 				}
 
+				// 跳过无法识别的角色（可能来自旧版本或配置变更）
 				role := model.RoleFromString(key)
 				if role == model.RoleInvalid {
 					continue
@@ -94,6 +110,11 @@ func (a *dbArtist) PostScan() error {
 	return nil
 }
 
+// PostMapArgs 写库前生成相似艺人 JSON 与全文索引。
+//
+// 排序名与 MBID 为空时从写入集合中删除而非写空值：
+// 艺人记录会被多首曲目反复写入，其中部分曲目可能缺少这些标签，
+// 若写空会把先前从完整标签中获得的信息抹掉。
 func (a *dbArtist) PostMapArgs(m map[string]any) error {
 	sa := make([]dbSimilarArtist, 0)
 	for _, s := range a.Artist.SimilarArtists {
@@ -124,6 +145,10 @@ func (dba dbArtists) toModels() model.Artists {
 	return res
 }
 
+// NewArtistRepository 创建艺人仓储。
+// indexGroups 是首字母索引的分组规则（如把 A/Á/À 归为一组），
+// 用于生成按字母浏览的索引。
+// 统计相关的排序直接用 JSON 路径提取器，避免额外建列。
 func NewArtistRepository(ctx context.Context, db dbx.Builder) model.ArtistRepository {
 	r := &artistRepository{}
 	r.ctx = ctx
@@ -154,6 +179,9 @@ func NewArtistRepository(ctx context.Context, db dbx.Builder) model.ArtistReposi
 	return r
 }
 
+// roleFilter 按角色筛选艺人：该角色下的曲目数存在即视为担任过此角色。
+// 角色名必须先经白名单校验，非法值返回恒假条件，
+// 因为角色名会被直接拼入 JSON 路径而无法参数化。
 func roleFilter(_ string, role any) Sqlizer {
 	if role, ok := role.(string); ok {
 		if _, ok := model.AllRoles[role]; ok {
@@ -164,11 +192,18 @@ func roleFilter(_ string, role any) Sqlizer {
 }
 
 // artistLibraryIdFilter filters artists based on library access through the library_artist table
+// artistLibraryIdFilter 通过 library_artist 关联表按音乐库过滤艺人。
 func artistLibraryIdFilter(_ string, value interface{}) Sqlizer {
 	return Eq{"library_artist.library_id": value}
 }
 
 // applyLibraryFilterToArtistQuery applies library filtering to artist queries through the library_artist junction table
+// applyLibraryFilterToArtistQuery 通过 library_artist 关联表施加音乐库过滤。
+//
+// 与其他实体不同，艺人表本身没有 library_id 列（艺人跨库共享），
+// 必须经由关联表判断归属。
+// 这里用 INNER JOIN 还有一个副作用：在任何库中都没有作品的艺人
+// 会被自动排除，无需额外条件。
 func (r *artistRepository) applyLibraryFilterToArtistQuery(query SelectBuilder) SelectBuilder {
 	user := loggedUser(r.ctx)
 	// Join with library_artist first to ensure only artists with content in libraries are included
@@ -185,6 +220,11 @@ func (r *artistRepository) applyLibraryFilterToArtistQuery(query SelectBuilder) 
 	return query
 }
 
+// selectArtist 构建艺人的标准查询。
+//
+// 用 JSON_GROUP_OBJECT 把该艺人在各个库中的统计聚合成单个 JSON 对象，
+// 配合 GROUP BY artist.id 把 JOIN 展开的多行折回一行，
+// 再由 PostScan 解析并累加。这样一次查询即可拿到跨库汇总的统计。
 func (r *artistRepository) selectArtist(options ...model.QueryOptions) SelectBuilder {
 	// Stats Format: {"1": {"albumartist": {"m": 10, "a": 5, "s": 1024}, "artist": {...}}, "2": {...}}
 	query := r.newSelect(options...).Columns("artist.*",
@@ -195,6 +235,7 @@ func (r *artistRepository) selectArtist(options ...model.QueryOptions) SelectBui
 	return r.withAnnotation(query, "artist.id")
 }
 
+// CountAll 统计当前用户可见的艺人数。
 func (r *artistRepository) CountAll(options ...model.QueryOptions) (int64, error) {
 	query := r.newSelect()
 	query = r.applyLibraryFilterToArtistQuery(query)
@@ -203,6 +244,8 @@ func (r *artistRepository) CountAll(options ...model.QueryOptions) (int64, error
 }
 
 // Exists checks if an artist with the given ID exists in the database and is accessible by the current user.
+// Exists 判断艺人是否存在且当前用户有权访问。
+// 不能直接用基类的 exists：艺人的权限判定需经 library_artist 关联表。
 func (r *artistRepository) Exists(id string) (bool, error) {
 	// Create a query using the same library filtering logic as selectArtist()
 	query := r.newSelect().Columns("count(distinct artist.id) as exist").Where(Eq{"artist.id": id})
@@ -213,6 +256,7 @@ func (r *artistRepository) Exists(id string) (bool, error) {
 	return res.Exist > 0, err
 }
 
+// Put 写入艺人。colsToUpdate 可限定只更新部分列。
 func (r *artistRepository) Put(a *model.Artist, colsToUpdate ...string) error {
 	dba := &dbArtist{Artist: a}
 	dba.CreatedAt = P(time.Now())
@@ -221,6 +265,8 @@ func (r *artistRepository) Put(a *model.Artist, colsToUpdate ...string) error {
 	return err
 }
 
+// UpdateExternalInfo 只更新来自外部服务的信息（简介、头像、相似艺人等），
+// 避免覆盖扫描器写入的本地元数据。
 func (r *artistRepository) UpdateExternalInfo(a *model.Artist) error {
 	dba := &dbArtist{Artist: a}
 	_, err := r.put(a.ID, dba,
@@ -229,6 +275,8 @@ func (r *artistRepository) UpdateExternalInfo(a *model.Artist) error {
 	return err
 }
 
+// Get 按 ID 读取单个艺人。
+// 用 queryAll 而非 queryOne：查询含 GROUP BY 聚合，走同一路径更稳妥。
 func (r *artistRepository) Get(id string) (*model.Artist, error) {
 	sel := r.selectArtist().Where(Eq{"artist.id": id})
 	var dba dbArtists
@@ -242,6 +290,7 @@ func (r *artistRepository) Get(id string) (*model.Artist, error) {
 	return &res[0], nil
 }
 
+// GetAll 按条件查询艺人列表。
 func (r *artistRepository) GetAll(options ...model.QueryOptions) (model.Artists, error) {
 	sel := r.selectArtist(options...)
 	var dba dbArtists
@@ -253,6 +302,9 @@ func (r *artistRepository) GetAll(options ...model.QueryOptions) (model.Artists,
 	return res, err
 }
 
+// getIndexKey 计算艺人在字母索引中的归属分组。
+// 依配置决定用排序标签还是系统规整名作为依据，
+// 按前缀匹配索引分组规则，未命中的归入 "#"（数字、符号、非拉丁字符等）。
 func (r *artistRepository) getIndexKey(a model.Artist) string {
 	source := a.OrderArtistName
 	if conf.Server.PreferSortTags {
@@ -270,6 +322,13 @@ func (r *artistRepository) getIndexKey(a model.Artist) string {
 // GetIndex returns a list of artists grouped by the first letter of their name, or by the index group if configured.
 // It can filter by roles and libraries, and optionally include artists that are missing (i.e., have no albums).
 // TODO Cache the index (recalculate at scan time)
+//
+// GetIndex 返回按首字母（或配置的索引分组）归类的艺人索引，供客户端字母导航使用。
+//
+// 库 ID 为空时直接返回空索引：这表示用户无任何可访问的库，
+// 不加此判断会退化为查询全部艺人。
+// 多个角色之间是 OR 关系——担任其中任一角色即应出现在索引中。
+// 分组在应用层完成（SQL 难以表达前缀分组规则），最后按分组键排序。
 func (r *artistRepository) GetIndex(includeMissing bool, libraryIds []int, roles ...model.Role) (model.ArtistIndexes, error) {
 	// Validate library IDs. If no library IDs are provided, return an empty index.
 	if len(libraryIds) == 0 {
@@ -313,6 +372,7 @@ func (r *artistRepository) GetIndex(includeMissing bool, libraryIds []int, roles
 	return result, nil
 }
 
+// purgeEmpty 删除不再关联任何专辑的艺人，由 GC 调用。
 func (r *artistRepository) purgeEmpty() error {
 	del := Delete(r.tableName).Where("id not in (select artist_id from album_artists)")
 	c, err := r.executeSQL(del)
@@ -326,6 +386,11 @@ func (r *artistRepository) purgeEmpty() error {
 }
 
 // markMissing marks artists as missing if all their albums are missing.
+// markMissing 把「所有专辑都已缺失」的艺人标记为缺失。
+//
+// 单条 SQL 完成：CTE 先求出仍有在线专辑的艺人集合，
+// 再用「不在该集合中」一次性更新全部艺人的 missing 标志。
+// 注意这是全量重算而非增量，因此也会把恢复的艺人重新标为未缺失。
 func (r *artistRepository) markMissing() error {
 	q := Expr(`
 with artists_with_non_missing_albums as (
@@ -346,6 +411,13 @@ set missing = (artist.id not in (select artist_id from artists_with_non_missing_
 
 // RefreshPlayCounts updates the play count and last play date annotations for all artists, based
 // on the media files associated with them.
+//
+// RefreshPlayCounts 依据曲目播放记录重算所有艺人的播放次数与最近播放时间。
+//
+// 与专辑不同，曲目与艺人是多对多关系且存于 JSON 列，
+// 故需用 json_tree 展开 participants 中的 artist 数组取出艺人 ID
+// （key = 'id' 用于只取 ID 节点，排除 name 等其他字段），
+// 再按「用户 + 艺人」聚合后 upsert。
 func (r *artistRepository) RefreshPlayCounts() (int64, error) {
 	query := Expr(`
 with play_counts as (
@@ -370,6 +442,20 @@ on conflict (user_id, item_id, item_type) do update
 // RefreshStats updates the stats field for artists whose associated media files were updated after the oldest recorded library scan time.
 // When allArtists is true, it refreshes stats for all artists. It processes artists in batches to handle potentially large updates.
 // This method now calculates per-library statistics and stores them in the library_artist junction table.
+//
+// RefreshStats 重算艺人统计（曲目数、专辑数、总字节数），按「库 × 角色」写入 library_artist.stats。
+//
+// 增量模式下只处理 updated_at 晚于「最早一次库扫描时间」的艺人；
+// 取最早而非最晚，是为了避免多库扫描时间不一致导致漏算。
+//
+// SQL 中用四个 CTE 分别统计：按具体角色、总计（total）、
+// 以及主要参与（maincredit，只含专辑艺人与曲目艺人，
+// 用于区分「是这张专辑的艺人」与「只是参与了某首曲子」）。
+// 三者 UNION 后按「艺人 × 库」聚合成 JSON 写回。
+//
+// 分批处理（每批 1000）并手工拼接 IN 占位符，是因为 SQLite
+// 对单条语句的参数个数有上限；占位符在四处 IN 子句中重复出现，
+// 故参数数组需按批长度重复四份。
 func (r *artistRepository) RefreshStats(allArtists bool) (int64, error) {
 	var allTouchedArtistIDs []string
 	if allArtists {
@@ -500,6 +586,8 @@ func (r *artistRepository) RefreshStats(allArtists bool) (int64, error) {
 	}
 
 	// // Remove library_artist entries for artists that no longer have any content in any library
+	// 清理统计为空的关联行：这些艺人在该库中已无任何内容，
+	// 保留会让 selectArtist 的 INNER JOIN 把无内容艺人也带出来
 	cleanupSQL := Delete("library_artist").Where("stats = '{}'")
 	cleanupRows, err := r.executeSQL(cleanupSQL)
 	if err != nil {
@@ -512,6 +600,7 @@ func (r *artistRepository) RefreshStats(allArtists bool) (int64, error) {
 	return totalRowsAffected, nil
 }
 
+// Search 搜索艺人。全文搜索时按曲目总数倒序，让作品多的艺人优先出现。
 func (r *artistRepository) Search(q string, offset int, size int, options ...model.QueryOptions) (model.Artists, error) {
 	var res dbArtists
 	if uuid.Validate(q) == nil {
@@ -521,6 +610,8 @@ func (r *artistRepository) Search(q string, offset int, size int, options ...mod
 		}
 	} else {
 		// Natural order for artists is more performant by ID, due to GROUP BY clause in selectArtist
+		// 自然序用 artist.id 而非 rowid：selectArtist 含 GROUP BY artist.id，
+		// 按同一列排序可复用分组结果，避免额外排序
 		err := r.doSearch(r.selectArtist(options...), q, offset, size, &res, "artist.id",
 			"sum(json_extract(stats, '$.total.m')) desc", "name")
 		if err != nil {
@@ -530,6 +621,8 @@ func (r *artistRepository) Search(q string, offset int, size int, options ...mod
 	return res.toModels(), nil
 }
 
+// 以下实现 model.ResourceRepository，供通用 REST 层调用。
+
 func (r *artistRepository) Count(options ...rest.QueryOptions) (int64, error) {
 	return r.CountAll(r.parseRestOptions(r.ctx, options...))
 }
@@ -538,6 +631,11 @@ func (r *artistRepository) Read(id string) (interface{}, error) {
 	return r.Get(id)
 }
 
+// ReadAll 查询艺人列表。
+//
+// 统计类排序需依当前筛选的角色动态改写：
+// 按「作曲家」浏览时，song_count 应指其作曲的曲目数而非全部曲目数。
+// 角色名取自过滤条件，已由 roleFilter 的白名单保证合法。
 func (r *artistRepository) ReadAll(options ...rest.QueryOptions) (interface{}, error) {
 	role := "total"
 	if len(options) > 0 {

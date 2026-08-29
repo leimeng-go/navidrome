@@ -18,15 +18,20 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+// playlistRepository 是播放列表仓储，同时处理普通列表与智能列表。
+// 二者共用一张表，靠 rules 列是否为空区分。
 type playlistRepository struct {
 	sqlRepository
 }
 
+// dbPlaylist 是 model.Playlist 的数据库映射层。
+// Rules 用 NullString：普通列表该列为 NULL。
 type dbPlaylist struct {
 	model.Playlist `structs:",flatten"`
 	Rules          sql.NullString `structs:"-"`
 }
 
+// PostScan 解析智能列表的规则 JSON。
 func (p *dbPlaylist) PostScan() error {
 	if p.Rules.String != "" {
 		return json.Unmarshal([]byte(p.Rules.String), &p.Playlist.Rules)
@@ -34,6 +39,9 @@ func (p *dbPlaylist) PostScan() error {
 	return nil
 }
 
+// PostMapArgs 写库前处理规则列：
+// 智能列表序列化规则，普通列表则删除该列以保持 NULL——
+// 写空字符串会让 IsSmartPlaylist 之类的判断失准。
 func (p dbPlaylist) PostMapArgs(args map[string]any) error {
 	var err error
 	if p.Playlist.IsSmartPlaylist() {
@@ -47,6 +55,7 @@ func (p dbPlaylist) PostMapArgs(args map[string]any) error {
 	return nil
 }
 
+// NewPlaylistRepository 创建播放列表仓储。
 func NewPlaylistRepository(ctx context.Context, db dbx.Builder) model.PlaylistRepository {
 	r := &playlistRepository{}
 	r.ctx = ctx
@@ -61,6 +70,7 @@ func NewPlaylistRepository(ctx context.Context, db dbx.Builder) model.PlaylistRe
 	return r
 }
 
+// playlistFilter 是通用搜索：名称或备注命中即可。
 func playlistFilter(_ string, value interface{}) Sqlizer {
 	return Or{
 		substringFilter("playlist.name", value),
@@ -68,6 +78,8 @@ func playlistFilter(_ string, value interface{}) Sqlizer {
 	}
 }
 
+// smartPlaylistFilter 筛选普通（非智能）列表，即规则为空的列表。
+// 空串与 NULL 都要判断：历史数据中两种形式都存在。
 func smartPlaylistFilter(string, interface{}) Sqlizer {
 	return Or{
 		Eq{"rules": ""},
@@ -75,6 +87,8 @@ func smartPlaylistFilter(string, interface{}) Sqlizer {
 	}
 }
 
+// userFilter 限定可见范围：管理员可见全部，普通用户只能看到公开列表与自己的列表。
+// 管理员返回空的 And{}（恒真），使调用方无需分支处理。
 func (r *playlistRepository) userFilter() Sqlizer {
 	user := loggedUser(r.ctx)
 	if user.IsAdmin {
@@ -86,15 +100,19 @@ func (r *playlistRepository) userFilter() Sqlizer {
 	}
 }
 
+// CountAll 统计当前用户可见的播放列表数。
 func (r *playlistRepository) CountAll(options ...model.QueryOptions) (int64, error) {
 	sq := Select().Where(r.userFilter())
 	return r.count(sq, options...)
 }
 
+// Exists 判断列表存在且当前用户可见。
 func (r *playlistRepository) Exists(id string) (bool, error) {
 	return r.exists(And{Eq{"id": id}, r.userFilter()})
 }
 
+// Delete 删除播放列表。
+// 非管理员只能删除自己拥有的列表——可见（公开）不等于可删。
 func (r *playlistRepository) Delete(id string) error {
 	usr := loggedUser(r.ctx)
 	if !usr.IsAdmin {
@@ -109,6 +127,11 @@ func (r *playlistRepository) Delete(id string) error {
 	return r.delete(And{Eq{"id": id}, r.userFilter()})
 }
 
+// Put 保存播放列表。
+//
+// 更新既有列表前先校验可见性，防止越权修改他人的私有列表。
+// 智能列表不在此处刷新曲目：求值可能很慢并长时间持有写锁，
+// 会阻塞正在进行的扫描，故延迟到读取时再刷新。
 func (r *playlistRepository) Put(p *model.Playlist) error {
 	pls := dbPlaylist{Playlist: *p}
 	if pls.ID == "" {
@@ -136,16 +159,21 @@ func (r *playlistRepository) Put(p *model.Playlist) error {
 		return nil
 	}
 	// Only update tracks if they were specified
+	// 未传曲目时只刷新统计，避免把「仅改名」误当成「清空列表」
 	if len(pls.Tracks) > 0 {
 		return r.updateTracks(id, p.MediaFiles())
 	}
 	return r.refreshCounters(&pls.Playlist)
 }
 
+// Get 按 ID 读取播放列表（不含曲目）。
 func (r *playlistRepository) Get(id string) (*model.Playlist, error) {
 	return r.findBy(And{Eq{"playlist.id": id}, r.userFilter()})
 }
 
+// GetWithTracks 读取播放列表及其曲目。
+// refreshSmartPlaylist 控制是否重新求值智能列表规则；
+// 过滤 missing 曲目，避免播放时遇到已不存在的文件。
 func (r *playlistRepository) GetWithTracks(id string, refreshSmartPlaylist, includeMissing bool) (*model.Playlist, error) {
 	pls, err := r.Get(id)
 	if err != nil {
@@ -183,6 +211,7 @@ func (r *playlistRepository) findBy(sql Sqlizer) (*model.Playlist, error) {
 	return &pls[0].Playlist, nil
 }
 
+// GetAll 查询当前用户可见的播放列表。
 func (r *playlistRepository) GetAll(options ...model.QueryOptions) (model.Playlists, error) {
 	sel := r.selectPlaylist(options...).Where(r.userFilter())
 	var res []dbPlaylist
@@ -197,6 +226,8 @@ func (r *playlistRepository) GetAll(options ...model.QueryOptions) (model.Playli
 	return playlists, err
 }
 
+// GetPlaylists 返回包含指定曲目的所有播放列表。
+// 曲目不在任何列表中时返回空切片而非错误，方便调用方直接遍历。
 func (r *playlistRepository) GetPlaylists(mediaFileId string) (model.Playlists, error) {
 	sel := r.selectPlaylist(model.QueryOptions{Sort: "name"}).
 		Join("playlist_tracks on playlist.id = playlist_tracks.playlist_id").
@@ -216,11 +247,22 @@ func (r *playlistRepository) GetPlaylists(mediaFileId string) (model.Playlists, 
 	return playlists, nil
 }
 
+// selectPlaylist 构建标准查询，附带关联出所有者用户名以便前端展示。
 func (r *playlistRepository) selectPlaylist(options ...model.QueryOptions) SelectBuilder {
 	return r.newSelect(options...).Join("user on user.id = owner_id").
 		Columns(r.tableName+".*", "user.user_name as owner_name")
 }
 
+// refreshSmartPlaylist 重新求值智能列表并回填曲目，返回是否实际执行了刷新。
+//
+// 三种情况跳过刷新：非智能列表、距上次求值未超过配置的间隔（避免频繁重算）、
+// 以及列表属于其他用户——规则求值依赖当前用户的标注（评分、播放次数等），
+// 用他人身份求值会写入错误结果。
+//
+// 刷新过程：先清空旧曲目，递归刷新被引用的子列表（规则中可引用其他播放列表），
+// 然后用 INSERT ... SELECT 一次性写入匹配曲目，
+// row_number() 按规则的排序生成序号，保证列表内顺序稳定。
+// 最后更新统计与 evaluated_at 时间戳作为缓存依据。
 func (r *playlistRepository) refreshSmartPlaylist(pls *model.Playlist) bool {
 	// Only refresh if it is a smart playlist and was not refreshed within the interval provided by the refresh delay config
 	if !pls.IsSmartPlaylist() || (pls.EvaluatedAt != nil && time.Since(*pls.EvaluatedAt) < conf.Server.SmartPlaylistRefreshDelay) {
@@ -297,6 +339,7 @@ func (r *playlistRepository) refreshSmartPlaylist(pls *model.Playlist) bool {
 	return true
 }
 
+// addCriteria 把智能列表规则转换为 WHERE / ORDER BY / LIMIT 子句。
 func (r *playlistRepository) addCriteria(sql SelectBuilder, c criteria.Criteria) SelectBuilder {
 	sql = sql.Where(c)
 	if c.Limit > 0 {
@@ -308,6 +351,7 @@ func (r *playlistRepository) addCriteria(sql SelectBuilder, c criteria.Criteria)
 	return sql
 }
 
+// updateTracks 用给定曲目整体替换列表内容。
 func (r *playlistRepository) updateTracks(id string, tracks model.MediaFiles) error {
 	ids := make([]string, len(tracks))
 	for i := range tracks {
@@ -316,6 +360,8 @@ func (r *playlistRepository) updateTracks(id string, tracks model.MediaFiles) er
 	return r.updatePlaylist(id, ids)
 }
 
+// updatePlaylist 以「先删后插」的方式重建列表内容。
+// 全量替换比逐条 diff 更简单可靠，且列表规模通常有限。
 func (r *playlistRepository) updatePlaylist(playlistId string, mediaFileIds []string) error {
 	if !r.isWritable(playlistId) {
 		return rest.ErrPermissionDenied
@@ -331,9 +377,12 @@ func (r *playlistRepository) updatePlaylist(playlistId string, mediaFileIds []st
 	return r.addTracks(playlistId, 1, mediaFileIds)
 }
 
+// addTracks 从 startingPos 开始追加曲目。
+// playlist_tracks.id 即列表内的位置序号，故插入时需自行递增维护。
 func (r *playlistRepository) addTracks(playlistId string, startingPos int, mediaFileIds []string) error {
 	// Break the track list in chunks to avoid hitting SQLITE_MAX_VARIABLE_NUMBER limit
 	// Add new tracks, chunk by chunk
+	// 每 200 条一批，规避 SQLite 单语句参数数量上限
 	pos := startingPos
 	for chunk := range slices.Chunk(mediaFileIds, 200) {
 		ins := Insert("playlist_tracks").Columns("playlist_id", "media_file_id", "id")
@@ -351,6 +400,8 @@ func (r *playlistRepository) addTracks(playlistId string, startingPos int, media
 }
 
 // refreshCounters updates total playlist duration, size and count
+// refreshCounters 重算并写回列表的总时长、总大小与曲目数，
+// 同时同步更新传入对象的字段，省去调用方重新查询。
 func (r *playlistRepository) refreshCounters(pls *model.Playlist) error {
 	statsSql := Select(
 		"coalesce(sum(duration), 0) as duration",
@@ -383,6 +434,9 @@ func (r *playlistRepository) refreshCounters(pls *model.Playlist) error {
 	return nil
 }
 
+// loadTracks 加载列表曲目，附带当前用户的标注（星标、评分、播放次数）
+// 与所属音乐库信息。annotation 用 LEFT JOIN 并 coalesce 兜底，
+// 因为从未被标注过的曲目不存在对应记录。
 func (r *playlistRepository) loadTracks(sel SelectBuilder, id string) (model.PlaylistTracks, error) {
 	sel = r.applyLibraryFilter(sel, "f")
 	userID := loggedUser(r.ctx).ID
@@ -414,6 +468,8 @@ func (r *playlistRepository) loadTracks(sel SelectBuilder, id string) (model.Pla
 	return tracks.toModels(), err
 }
 
+// 以下实现 rest.Repository / rest.Persistable，供通用 REST 层调用。
+
 func (r *playlistRepository) Count(options ...rest.QueryOptions) (int64, error) {
 	return r.CountAll(r.parseRestOptions(r.ctx, options...))
 }
@@ -434,6 +490,8 @@ func (r *playlistRepository) NewInstance() interface{} {
 	return &model.Playlist{}
 }
 
+// Save 新建播放列表，所有者强制设为当前用户，
+// 并清空传入的 ID 以防客户端伪造 ID 覆盖已有列表。
 func (r *playlistRepository) Save(entity interface{}) (string, error) {
 	pls := entity.(*model.Playlist)
 	pls.OwnerID = loggedUser(r.ctx).ID
@@ -445,6 +503,8 @@ func (r *playlistRepository) Save(entity interface{}) (string, error) {
 	return pls.ID, err
 }
 
+// Update 更新播放列表。
+// 非管理员有两重限制：只能改自己的列表，且不能转移所有权。
 func (r *playlistRepository) Update(id string, entity interface{}, cols ...string) error {
 	pls := dbPlaylist{Playlist: *entity.(*model.Playlist)}
 	current, err := r.Get(id)
@@ -471,6 +531,9 @@ func (r *playlistRepository) Update(id string, entity interface{}, cols ...strin
 	return err
 }
 
+// removeOrphans 清理指向已删除曲目的列表项，由 GC 调用。
+// 先找出受影响的列表，逐个删除孤儿项后重新编号，
+// 否则位置序号会出现空洞。
 func (r *playlistRepository) removeOrphans() error {
 	sel := Select("playlist_tracks.playlist_id as id", "p.name").From("playlist_tracks").
 		Join("playlist p on playlist_tracks.playlist_id = p.id").
@@ -504,6 +567,7 @@ func (r *playlistRepository) removeOrphans() error {
 	return nil
 }
 
+// renumber 按现有顺序重建列表，使位置序号重新连续。
 func (r *playlistRepository) renumber(id string) error {
 	var ids []string
 	sq := Select("media_file_id").From("playlist_tracks").Where(Eq{"playlist_id": id}).OrderBy("id")
@@ -514,6 +578,7 @@ func (r *playlistRepository) renumber(id string) error {
 	return r.updatePlaylist(id, ids)
 }
 
+// isWritable 判断当前用户能否修改列表内容：管理员或所有者。
 func (r *playlistRepository) isWritable(playlistId string) bool {
 	usr := loggedUser(r.ctx)
 	if usr.IsAdmin {

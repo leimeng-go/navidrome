@@ -10,10 +10,13 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+// playerRepository 是播放器仓储。
+// 「播放器」代表一个客户端实例，记录其转码偏好与音量等设置。
 type playerRepository struct {
 	sqlRepository
 }
 
+// NewPlayerRepository 创建播放器仓储。
 func NewPlayerRepository(ctx context.Context, db dbx.Builder) model.PlayerRepository {
 	r := &playerRepository{}
 	r.ctx = ctx
@@ -27,11 +30,13 @@ func NewPlayerRepository(ctx context.Context, db dbx.Builder) model.PlayerReposi
 	return r
 }
 
+// Put 写入播放器记录。
 func (r *playerRepository) Put(p *model.Player) error {
 	_, err := r.put(p.ID, p)
 	return err
 }
 
+// selectPlayer 构建标准查询，附带所属用户名。
 func (r *playerRepository) selectPlayer(options ...model.QueryOptions) SelectBuilder {
 	return r.newSelect(options...).
 		Columns("player.*").
@@ -39,6 +44,7 @@ func (r *playerRepository) selectPlayer(options ...model.QueryOptions) SelectBui
 		Columns("user.user_name username")
 }
 
+// Get 按 ID 读取播放器。
 func (r *playerRepository) Get(id string) (*model.Player, error) {
 	sel := r.selectPlayer().Where(Eq{"player.id": id})
 	var res model.Player
@@ -46,6 +52,8 @@ func (r *playerRepository) Get(id string) (*model.Player, error) {
 	return &res, err
 }
 
+// FindMatch 按「用户 + 客户端名 + User-Agent」查找已有播放器，
+// 使同一客户端重新连接时能复用此前的设置。
 func (r *playerRepository) FindMatch(userId, client, userAgent string) (*model.Player, error) {
 	sel := r.selectPlayer().Where(And{
 		Eq{"client": client},
@@ -57,11 +65,13 @@ func (r *playerRepository) FindMatch(userId, client, userAgent string) (*model.P
 	return &res, err
 }
 
+// newRestSelect 构建带权限限制的查询，供 REST 层使用。
 func (r *playerRepository) newRestSelect(options ...model.QueryOptions) SelectBuilder {
 	s := r.selectPlayer(options...)
 	return s.Where(r.addRestriction())
 }
 
+// addRestriction 追加可见性限制：管理员不受限，普通用户只能看到自己的播放器。
 func (r *playerRepository) addRestriction(sql ...Sqlizer) Sqlizer {
 	s := And{}
 	if len(sql) > 0 {
@@ -74,6 +84,9 @@ func (r *playerRepository) addRestriction(sql ...Sqlizer) Sqlizer {
 	return append(s, Eq{"user_id": u.ID})
 }
 
+// CountByClient 按客户端统计播放器数量，用于展示使用情况。
+// Navidrome 自带 Web 界面按播放器名称细分，
+// 因为所有 Web 会话的 client 字段都是同一个值，不细分则无法区分。
 func (r *playerRepository) CountByClient(options ...model.QueryOptions) (map[string]int64, error) {
 	sel := r.newSelect(options...).
 		Columns(
@@ -95,9 +108,12 @@ func (r *playerRepository) CountByClient(options ...model.QueryOptions) (map[str
 	return counts, nil
 }
 
+// CountAll 统计当前用户可见的播放器数。
 func (r *playerRepository) CountAll(options ...model.QueryOptions) (int64, error) {
 	return r.count(r.newRestSelect(), options...)
 }
+
+// 以下实现 rest 接口，均通过 newRestSelect / addRestriction 施加可见性限制。
 
 func (r *playerRepository) Count(options ...rest.QueryOptions) (int64, error) {
 	return r.CountAll(r.parseRestOptions(r.ctx, options...))
@@ -125,6 +141,7 @@ func (r *playerRepository) NewInstance() interface{} {
 	return &model.Player{}
 }
 
+// isPermitted 判断当前用户能否操作该播放器：管理员或其归属者。
 func (r *playerRepository) isPermitted(p *model.Player) bool {
 	u := loggedUser(r.ctx)
 	return u.IsAdmin || p.UserId == u.ID

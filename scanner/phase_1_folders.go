@@ -26,6 +26,8 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// createPhaseFolders 为每个音乐库创建扫描任务并组装阶段 1。
+// 单个库初始化失败只发警告并跳过，不影响其他库。
 func createPhaseFolders(ctx context.Context, state *scanState, ds model.DataStore, cw artwork.CacheWarmer) *phaseFolders {
 	var jobs []*scanJob
 
@@ -49,16 +51,20 @@ func createPhaseFolders(ctx context.Context, state *scanState, ds model.DataStor
 	return &phaseFolders{jobs: jobs, ctx: ctx, ds: ds, state: state}
 }
 
+// scanJob 是单个音乐库的扫描任务，持有该库的文件系统与目录更新信息。
 type scanJob struct {
 	lib           model.Library
 	fs            storage.MusicFS
 	cw            artwork.CacheWarmer
 	lastUpdates   map[string]model.FolderUpdateInfo // Holds last update info for all (DB) folders in this library
 	targetFolders []string                          // Specific folders to scan (including all descendants)
-	lock          sync.Mutex
+	lock          sync.Mutex                        // 保护 lastUpdates，遍历过程并发访问
 	numFolders    atomic.Int64
 }
 
+// newScanJob 创建库扫描任务。
+// 预先一次性载入全库目录的更新信息，遍历时逐个比对，
+// 避免每个目录都查一次数据库。
 func newScanJob(ctx context.Context, ds model.DataStore, cw artwork.CacheWarmer, lib model.Library, fullScan bool, targetFolders []string) (*scanJob, error) {
 	// Get folder updates, optionally filtered to specific target folders
 	lastUpdates, err := ds.Folder(ctx).GetFolderUpdateInfo(lib, targetFolders...)
@@ -93,6 +99,10 @@ func newScanJob(ctx context.Context, ds model.DataStore, cw artwork.CacheWarmer,
 
 // popLastUpdate retrieves and removes the last update info for the given folder ID
 // This is used to track which folders have been found during the walk_dir_tree
+//
+// popLastUpdate 取出并移除指定目录的更新信息。
+// 「取出即删除」是关键设计：遍历结束后 lastUpdates 中残留的条目，
+// 就是数据库中有、磁盘上却不存在的目录，即已被删除的目录。
 func (j *scanJob) popLastUpdate(folderID string) model.FolderUpdateInfo {
 	j.lock.Lock()
 	defer j.lock.Unlock()
@@ -122,18 +132,28 @@ func (j *scanJob) createFolderEntry(path string) *folderEntry {
 //
 // The phaseFolders struct implements the phase interface, providing methods to produce
 // folder entries, process folders, persist changes to the database, and log the results.
+//
+// phaseFolders 是扫描的第一阶段：遍历目录树，读取元数据，
+// 将新增/变更的曲目、专辑、艺人写入数据库。
 type phaseFolders struct {
 	jobs             []*scanJob
 	ds               model.DataStore
 	ctx              context.Context
 	state            *scanState
-	prevAlbumPIDConf string
+	prevAlbumPIDConf string // 上次扫描使用的专辑 PID 规则，用于识别 ID 变更
 }
 
 func (p *phaseFolders) description() string {
 	return "Scan all libraries and import new/updated files"
 }
 
+// producer 遍历各库目录树，只把「过期」的目录送入流水线。
+//
+// 判定过期的依据是目录修改时间与内容哈希（见 folderEntry.isOutdated）；
+// 未变化的目录直接跳过，这是增量扫描高效的关键。
+//
+// 增量扫描下，新出现但没有任何文件的空目录也会跳过——
+// 它们通常是用户刚建的临时目录，入库徒增噪声。
 func (p *phaseFolders) producer() ppl.Producer[*folderEntry] {
 	return ppl.NewProducer(func(put func(entry *folderEntry)) error {
 		var err error
@@ -192,11 +212,15 @@ func (p *phaseFolders) producer() ppl.Producer[*folderEntry] {
 	}, ppl.Name("traverse filesystem"))
 }
 
+// measure 记录该目录在当前环节的耗时，用于性能统计。
 func (p *phaseFolders) measure(entry *folderEntry) func() time.Duration {
 	entry.elapsed.Start()
 	return func() time.Duration { return entry.elapsed.Stop() }
 }
 
+// stages 定义阶段 1 的流水线环节。
+// 只有元数据读取环节并发执行（IO 密集）；
+// 入库环节串行，避免大量并发写事务争抢 SQLite 写锁。
 func (p *phaseFolders) stages() []ppl.Stage[*folderEntry] {
 	return []ppl.Stage[*folderEntry]{
 		ppl.NewStage(p.processFolder, ppl.Name("process folder"), ppl.Concurrency(conf.Server.DevScannerThreads)),
@@ -205,6 +229,14 @@ func (p *phaseFolders) stages() []ppl.Stage[*folderEntry] {
 	}
 }
 
+// processFolder 处理单个目录：比对磁盘与数据库，读取需导入文件的元数据。
+//
+// 通过「从 dbTracks 中逐个删除已在磁盘上找到的曲目」来求差集，
+// 剩余项即为磁盘上已消失的曲目，标记为缺失交由阶段 2 判断是否只是移动。
+//
+// 增量扫描下，仅当文件修改时间晚于数据库记录、或该曲目此前被标记缺失时才重读元数据。
+// 元数据读取失败只发警告并返回，不中断整轮扫描——
+// 单个损坏文件不应导致整个库无法扫描。
 func (p *phaseFolders) processFolder(entry *folderEntry) (*folderEntry, error) {
 	defer p.measure(entry)()
 
@@ -266,10 +298,18 @@ func (p *phaseFolders) processFolder(entry *folderEntry) (*folderEntry, error) {
 	return entry, nil
 }
 
+// 每批读取的文件数，控制单次内存占用
 const filesBatchSize = 200
 
 // loadTagsFromFiles reads metadata from the files in the given list and populates
 // the entry's tracks and tags with the results.
+//
+// loadTagsFromFiles 批量读取文件标签并转换为曲目与标签集合。
+//
+// 同时追踪专辑 ID 的变化：当 PID 生成规则调整或专辑元数据被修改时，
+// 同一张专辑会得到新的 ID，需记录「新 ID → 旧 ID」的映射，
+// 以便入库时把评分、播放次数等标注迁移过去。
+// 旧 ID 优先取数据库中的既有值；文件是新增的则用上次的 PID 规则现场推算。
 func (p *phaseFolders) loadTagsFromFiles(entry *folderEntry, toImport map[string]*model.MediaFile) error {
 	tracks := make([]model.MediaFile, 0, len(toImport))
 	uniqueTags := make(map[string]model.Tag, len(toImport))
@@ -306,6 +346,9 @@ func (p *phaseFolders) loadTagsFromFiles(entry *folderEntry, toImport map[string
 }
 
 // createAlbumsFromMediaFiles groups the entry's tracks by album ID and creates albums
+// createAlbumsFromMediaFiles 按专辑 ID 分组曲目并生成专辑记录。
+// 此处得到的专辑信息可能不完整（只涵盖本目录内的曲目），
+// 跨目录的完整信息由阶段 3 汇总。
 func (p *phaseFolders) createAlbumsFromMediaFiles(entry *folderEntry) {
 	grouped := slice.Group(entry.tracks, func(mf model.MediaFile) string { return mf.AlbumID })
 	albums := make(model.Albums, 0, len(grouped))
@@ -318,6 +361,7 @@ func (p *phaseFolders) createAlbumsFromMediaFiles(entry *folderEntry) {
 }
 
 // createArtistsFromMediaFiles creates artists from the entry's tracks
+// createArtistsFromMediaFiles 合并各曲目的参与者，得到本目录涉及的全部艺人。
 func (p *phaseFolders) createArtistsFromMediaFiles(entry *folderEntry) {
 	participants := make(model.Participants, len(entry.tracks)*3) // preallocate ~3 artists per track
 	for _, track := range entry.tracks {
@@ -326,6 +370,16 @@ func (p *phaseFolders) createArtistsFromMediaFiles(entry *folderEntry) {
 	entry.artists = participants.AllArtists()
 }
 
+// persistChanges 在单个事务内写入本目录的所有变更。
+//
+// 以目录为事务边界：粒度太细会因频繁提交拖慢速度，
+// 太粗则中断后需要重做的工作量过大。
+//
+// 艺人与专辑此时只写入部分字段，信息尚不完整——
+// 跨目录的完整数据要等阶段 3 汇总后才能确定。
+//
+// 封面预热延迟到事务提交后进行：
+// 它会读取数据库，在事务内触发可能造成自我阻塞。
 func (p *phaseFolders) persistChanges(entry *folderEntry) (*folderEntry, error) {
 	defer p.measure(entry)()
 	p.state.changesDetected.Store(true)
@@ -397,6 +451,8 @@ func (p *phaseFolders) persistChanges(entry *folderEntry) (*folderEntry, error) 
 		}
 
 		// Mark all missing tracks as not available
+		// 标记缺失曲目。这里只标记不删除：
+		// 阶段 2 还要用它们判断文件是否只是被移动了位置
 		if len(entry.missingTracks) > 0 {
 			err = mfRepo.MarkMissing(true, entry.missingTracks...)
 			if err != nil {
@@ -432,6 +488,16 @@ func (p *phaseFolders) persistChanges(entry *folderEntry) (*folderEntry, error) 
 }
 
 // persistAlbum persists the given album to the database, and reassigns annotations from the previous album ID
+//
+// persistAlbum 写入专辑，并在专辑 ID 发生变化时迁移历史数据。
+//
+// 需要迁移两类信息：
+//   - 用户标注（评分、星标、播放次数）——丢失会直接影响用户体验；
+//   - created_at 字段——保持「最近添加」列表的排序稳定，
+//     否则修改元数据会让老专辑跳到列表最前。
+//
+// 迁移失败只记警告不中断：专辑本身已写入成功，
+// 丢失标注虽不理想，但比整个扫描失败要好。
 func (p *phaseFolders) persistAlbum(repo model.AlbumRepository, a *model.Album, idMap map[string]string) error {
 	prevID := idMap[a.ID]
 	log.Trace(p.ctx, "Persisting album", "album", a.Name, "albumArtist", a.AlbumArtist, "id", a.ID, "prevID", cmp.Or(prevID, "nil"))
@@ -462,6 +528,7 @@ func (p *phaseFolders) persistAlbum(repo model.AlbumRepository, a *model.Album, 
 	return nil
 }
 
+// logFolder 输出目录处理结果。空目录降级为 Trace，避免刷屏。
 func (p *phaseFolders) logFolder(entry *folderEntry) (*folderEntry, error) {
 	logCall := log.Info
 	if entry.isEmpty() {
@@ -474,6 +541,13 @@ func (p *phaseFolders) logFolder(entry *folderEntry) (*folderEntry, error) {
 	return entry, nil
 }
 
+// finalize 处理磁盘上已消失的目录。
+//
+// 遍历过程中每找到一个目录就从 lastUpdates 移除，
+// 故此时残留的键就是数据库中有、磁盘上已不存在的目录，
+// 将其及其下曲目一并标记为缺失，并触碰相关专辑以便后续阶段刷新。
+//
+// 无论前序是否出错都要执行，故用 errors.Join 合并两处错误。
 func (p *phaseFolders) finalize(err error) error {
 	errF := p.ds.WithTx(func(tx model.DataStore) error {
 		for _, job := range p.jobs {

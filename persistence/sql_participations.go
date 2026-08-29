@@ -9,6 +9,16 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// 参与者数据以两种形式存储：
+//   - JSON 列（media_file.participants / album.participants）：
+//     便于随实体一次读出用于展示，无需 JOIN
+//   - 关联表（media_file_artists / album_artists）：
+//     便于按艺人反查作品、做聚合统计
+//
+// 本文件负责这两种形式的序列化与同步。
+
+// participant 是参与者在 JSON 列中的存储形式。
+// 冗余存 Name 以便展示时免于回查 artist 表。
 type participant struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -16,12 +26,15 @@ type participant struct {
 }
 
 // flatParticipant represents a flattened participant structure for SQL processing
+// flatParticipant 是写入关联表时使用的扁平结构：
+// 把「角色 → 艺人列表」的嵌套形式摊平为每行一条记录。
 type flatParticipant struct {
 	ArtistID string `json:"artist_id"`
 	Role     string `json:"role"`
 	SubRole  string `json:"sub_role,omitempty"`
 }
 
+// marshalParticipants 把参与者序列化为 JSON 列的内容。
 func marshalParticipants(participants model.Participants) string {
 	dbParticipants := make(map[model.Role][]participant)
 	for role, artists := range participants {
@@ -33,6 +46,8 @@ func marshalParticipants(participants model.Participants) string {
 	return string(res)
 }
 
+// unmarshalParticipants 从 JSON 列解析参与者。
+// 只还原 ID 与名字，其余艺人属性需要时再由 getParticipants 补齐。
 func unmarshalParticipants(data string) (model.Participants, error) {
 	var dbParticipants map[model.Role][]participant
 	err := json.Unmarshal([]byte(data), &dbParticipants)
@@ -50,6 +65,18 @@ func unmarshalParticipants(data string) (model.Participants, error) {
 	return participants, nil
 }
 
+// updateParticipants 同步实体与艺人的关联表。
+//
+// 采用「先全删再重建」而非增量比对：参与者数量少，
+// 全量替换更简单且不会遗留过期关联。
+//
+// 插入用单条 SQL 完成（json_each 展开 + JOIN artist），
+// 而非在 Go 中循环逐条插入，原因有二：
+//   - 一次往返即可写入全部，减少 SQLite 的语句开销
+//   - INNER JOIN artist 天然过滤掉不存在的艺人 ID，
+//     避免外键约束失败使整批写入回滚
+//
+// ON CONFLICT DO NOTHING 保证重复调用是幂等的。
 func (r sqlRepository) updateParticipants(itemID string, participants model.Participants) error {
 	// Delete all existing participant entries for this item.
 	// This ensures stale role associations are removed when an artist's role changes
@@ -99,6 +126,11 @@ func (r sqlRepository) updateParticipants(itemID string, participants model.Part
 	return err
 }
 
+// getParticipants 用完整的艺人信息填充参与者列表。
+//
+// JSON 列中只存了 ID 与名字，展示时若需要头像、MBID、排序名等，
+// 需回查 artist 表。这里一次性批量查出再按 ID 建索引回填，
+// 避免每个参与者单独查询造成 N+1。
 func (r *sqlRepository) getParticipants(m *model.MediaFile) (model.Participants, error) {
 	ar := NewArtistRepository(r.ctx, r.db)
 	ids := m.Participants.AllIDs()

@@ -20,6 +20,8 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// scannerImpl 是扫描器的进程内实现，负责编排四阶段流水线。
+// 另有 scannerExternal（external.go）以子进程方式运行同一套逻辑。
 type scannerImpl struct {
 	ds  model.DataStore
 	cw  artwork.CacheWarmer
@@ -27,20 +29,24 @@ type scannerImpl struct {
 }
 
 // scanState holds the state of an in-progress scan, to be passed to the various phases
+// scanState 保存一次扫描的共享状态，贯穿各个阶段。
 type scanState struct {
 	progress        chan<- *ProgressInfo
 	fullScan        bool
-	changesDetected atomic.Bool
+	changesDetected atomic.Bool      // 原子类型：各阶段可能并发写入
 	libraries       model.Libraries  // Store libraries list for consistency across phases
 	targets         map[int][]string // Optional: map[libraryID][]folderPaths for selective scans
 }
 
+// sendProgress 上报进度。progress 为 nil 时静默丢弃，
+// 使各阶段无需关心是否有人在监听。
 func (s *scanState) sendProgress(info *ProgressInfo) {
 	if s.progress != nil {
 		s.progress <- info
 	}
 }
 
+// isSelectiveScan 判断是否为指定目录的定向扫描（而非全库扫描）。
 func (s *scanState) isSelectiveScan() bool {
 	return len(s.targets) > 0
 }
@@ -53,6 +59,13 @@ func (s *scanState) sendError(err error) {
 	s.sendProgress(&ProgressInfo{Error: err.Error()})
 }
 
+// scanFolders 执行一次完整的扫描流程。
+//
+// targets 非空时为定向扫描：只处理指定库中的指定目录，
+// 用于文件系统监听器捕捉到局部变更的场景。
+//
+// 全量扫描直接把 changesDetected 置真，
+// 确保 GC、统计刷新等收尾操作一定执行（即使本次未发现文件变化）。
 func (s *scannerImpl) scanFolders(ctx context.Context, fullScan bool, targets []model.ScanTarget, progress chan<- *ProgressInfo) {
 	startTime := time.Now()
 
@@ -110,6 +123,8 @@ func (s *scannerImpl) scanFolders(ctx context.Context, fullScan bool, targets []
 	_ = s.ds.Property(ctx).Put(consts.LastScanStartTimeKey, startTime.Format(time.RFC3339))
 
 	// if there was a full scan in progress, force a full scan
+	// 上次全量扫描被中断时强制再做一次全量：
+	// 中断意味着部分目录未处理，增量扫描无法补齐这些遗漏
 	if !state.fullScan {
 		for _, lib := range state.libraries {
 			if lib.FullScanInProgress {
@@ -135,21 +150,28 @@ func (s *scannerImpl) scanFolders(ctx context.Context, fullScan bool, targets []
 
 	err = run.Sequentially(
 		// Phase 1: Scan all libraries and import new/updated files
+		// 阶段 1：遍历目录，导入新增/变更的文件
 		runPhase[*folderEntry](ctx, 1, createPhaseFolders(ctx, &state, s.ds, s.cw)),
 
 		// Phase 2: Process missing files, checking for moves
+		// 阶段 2：处理缺失文件，识别「移动」而非「删除」
+		// 必须在阶段 1 之后：需要先知道有哪些新文件才能配对
 		runPhase[*missingTracks](ctx, 2, createPhaseMissingTracks(ctx, &state, s.ds)),
 
 		// Phases 3 and 4 can be run in parallel
+		// 阶段 3 与 4 互不依赖，可并行
 		run.Parallel(
 			// Phase 3: Refresh all new/changed albums and update artists
+			// 阶段 3：依据曲目元数据刷新专辑与艺人
 			runPhase[*model.Album](ctx, 3, createPhaseRefreshAlbums(ctx, &state, s.ds)),
 
 			// Phase 4: Import/update playlists
+			// 阶段 4：导入/更新播放列表文件
 			runPhase[*model.Folder](ctx, 4, createPhasePlaylists(ctx, &state, s.ds, s.pls, s.cw)),
 		),
 
 		// Final Steps (cannot be parallelized):
+		// 收尾步骤，彼此有依赖，必须串行
 
 		// Run GC if there were any changes (Remove dangling tracks, empty albums and artists, and orphan annotations)
 		s.runGC(ctx, &state),
@@ -186,6 +208,11 @@ func (s *scannerImpl) scanFolders(ctx context.Context, fullScan bool, targets []
 // prepareLibrariesForScan initializes the scan for all libraries in the state.
 // It calls ScanBegin for libraries that haven't started scanning yet (LastScanStartedAt is zero),
 // reloads them to get the updated state, and filters out any libraries that fail to initialize.
+//
+// prepareLibrariesForScan 为各音乐库标记扫描开始。
+// LastScanStartedAt 非零表示上次扫描被中断，本次视为续扫，不重置开始时间——
+// 各阶段用该时间判断哪些记录是本轮扫描触及的。
+// 初始化失败的库只发警告并跳过，不影响其他库；全部失败才返回错误。
 func (s *scannerImpl) prepareLibrariesForScan(ctx context.Context, state *scanState) error {
 	var successfulLibs []model.Library
 
@@ -225,6 +252,9 @@ func (s *scannerImpl) prepareLibrariesForScan(ctx context.Context, state *scanSt
 	return nil
 }
 
+// runGC 清理孤儿数据：无文件的曲目、空专辑、无作品的艺人、悬空标注。
+// 无变化时跳过——GC 开销不小且此时必然无可清理对象。
+// 定向扫描只清理涉及的库，避免误删其他库中因故暂时不可见的数据。
 func (s *scannerImpl) runGC(ctx context.Context, state *scanState) func() error {
 	return func() error {
 		state.sendProgress(&ProgressInfo{ForceUpdate: true})
@@ -253,6 +283,8 @@ func (s *scannerImpl) runGC(ctx context.Context, state *scanState) func() error 
 	}
 }
 
+// runRefreshStats 重算艺人统计与标签计数。
+// 这两项依赖 GC 后的最终数据，故放在收尾阶段。
 func (s *scannerImpl) runRefreshStats(ctx context.Context, state *scanState) func() error {
 	return func() error {
 		if !state.changesDetected.Load() {
@@ -278,6 +310,7 @@ func (s *scannerImpl) runRefreshStats(ctx context.Context, state *scanState) fun
 	}
 }
 
+// runOptimize 执行数据库维护（重整索引、回收空间）。
 func (s *scannerImpl) runOptimize(ctx context.Context) func() error {
 	return func() error {
 		start := time.Now()
@@ -287,6 +320,11 @@ func (s *scannerImpl) runOptimize(ctx context.Context) func() error {
 	}
 }
 
+// runUpdateLibraries 标记各库扫描完成，并记录本次使用的 PID 生成规则。
+//
+// 记录 PID 规则的目的：规则一旦变更，所有曲目/专辑的持久化 ID 都会改变，
+// 启动时对比即可判断是否需要强制全量重扫。
+// 整个过程在单个事务内完成，避免出现「已标记完成但统计未更新」的中间态。
 func (s *scannerImpl) runUpdateLibraries(ctx context.Context, state *scanState) func() error {
 	return func() error {
 		start := time.Now()
@@ -323,6 +361,9 @@ func (s *scannerImpl) runUpdateLibraries(ctx context.Context, state *scanState) 
 	}
 }
 
+// phase 是扫描阶段的统一抽象：
+// 每个阶段提供一个数据源（producer）与若干处理环节（stages），
+// 由流水线框架驱动，泛型参数 T 是该阶段流转的数据类型。
 type phase[T any] interface {
 	producer() ppl.Producer[T]
 	stages() []ppl.Stage[T]
@@ -330,6 +371,12 @@ type phase[T any] interface {
 	description() string
 }
 
+// runPhase 把一个阶段包装成可被 run.Sequentially 调度的函数。
+//
+// 在流水线最前面插入计数环节以统计处理量。
+// Debug 级别下改用 Measure 收集各环节耗时，便于定位性能瓶颈。
+// 无论成败都调用 finalize：阶段需要在此做收尾（如标记缺失记录），
+// 且要能感知前序错误以决定是否跳过收尾动作。
 func runPhase[T any](ctx context.Context, phaseNum int, phase phase[T]) func() error {
 	return func() error {
 		log.Debug(ctx, fmt.Sprintf("Scanner: Starting phase %d: %s", phaseNum, phase.description()))
@@ -363,6 +410,8 @@ func runPhase[T any](ctx context.Context, phaseNum int, phase phase[T]) func() e
 	}
 }
 
+// countTasks 返回一个计数器与配套的流水线环节，
+// 该环节原样透传数据、只做计数（环节可能并发执行，故用原子计数）。
 func countTasks[T any]() (*atomic.Int64, func(T) (T, error)) {
 	counter := atomic.Int64{}
 	return &counter, func(in T) (T, error) {

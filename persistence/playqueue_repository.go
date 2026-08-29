@@ -13,10 +13,13 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+// playQueueRepository 是播放队列仓储，
+// 用于在多个客户端之间同步「当前播放列表与进度」。每个用户最多一条队列。
 type playQueueRepository struct {
 	sqlRepository
 }
 
+// NewPlayQueueRepository 创建播放队列仓储。
 func NewPlayQueueRepository(ctx context.Context, db dbx.Builder) model.PlayQueueRepository {
 	r := &playQueueRepository{}
 	r.ctx = ctx
@@ -25,6 +28,8 @@ func NewPlayQueueRepository(ctx context.Context, db dbx.Builder) model.PlayQueue
 	return r
 }
 
+// playQueue 是数据库存储形式：
+// 队列内容压成逗号分隔的曲目 ID 串，无需另建关联表。
 type playQueue struct {
 	ID        string    `structs:"id"`
 	UserID    string    `structs:"user_id"`
@@ -36,6 +41,12 @@ type playQueue struct {
 	UpdatedAt time.Time `structs:"updated_at"`
 }
 
+// Store 保存播放队列。
+//
+// 每个用户只保留一条记录，故先查已有记录并复用其 ID，
+// 防止客户端传入新 ID 时产生重复行。
+// 未指定列时视为整体替换：先清空旧队列；
+// 若新队列为空则到此为止（相当于清空操作）。
 func (r *playQueueRepository) Store(q *model.PlayQueue, colNames ...string) error {
 	u := loggedUser(r.ctx)
 
@@ -76,6 +87,7 @@ func (r *playQueueRepository) Store(q *model.PlayQueue, colNames ...string) erro
 	return nil
 }
 
+// RetrieveWithMediaFiles 读取队列并加载完整的曲目信息。
 func (r *playQueueRepository) RetrieveWithMediaFiles(userId string) (*model.PlayQueue, error) {
 	sel := r.newSelect().Columns("*").Where(Eq{"user_id": userId})
 	var res playQueue
@@ -85,6 +97,7 @@ func (r *playQueueRepository) RetrieveWithMediaFiles(userId string) (*model.Play
 	return &q, err
 }
 
+// Retrieve 只读取队列元信息，Items 中仅含曲目 ID。
 func (r *playQueueRepository) Retrieve(userId string) (*model.PlayQueue, error) {
 	sel := r.newSelect().Columns("*").Where(Eq{"user_id": userId})
 	var res playQueue
@@ -93,6 +106,7 @@ func (r *playQueueRepository) Retrieve(userId string) (*model.PlayQueue, error) 
 	return &q, err
 }
 
+// fromModel 把领域对象转为存储形式，曲目列表压成 ID 串。
 func (r *playQueueRepository) fromModel(q *model.PlayQueue) playQueue {
 	pq := playQueue{
 		ID:        q.ID,
@@ -111,6 +125,8 @@ func (r *playQueueRepository) fromModel(q *model.PlayQueue) playQueue {
 	return pq
 }
 
+// toModel 把存储形式还原为领域对象。
+// 此时 Items 中只有 ID，完整信息需再调 loadTracks 填充。
 func (r *playQueueRepository) toModel(pq *playQueue) model.PlayQueue {
 	q := model.PlayQueue{
 		ID:        pq.ID,
@@ -132,6 +148,10 @@ func (r *playQueueRepository) toModel(pq *playQueue) model.PlayQueue {
 
 // loadTracks loads the tracks from the database. It receives a list of track IDs and returns a list of MediaFiles
 // in the same order as the input list.
+//
+// loadTracks 按 ID 批量加载曲目并保持原有顺序（队列顺序有意义，不能被查询顺序打乱）。
+// 已从库中删除的曲目会被静默剔除，避免队列中出现无法播放的空洞。
+// 每 500 个一批，规避 SQLite 参数数量上限。
 func (r *playQueueRepository) loadTracks(tracks model.MediaFiles) model.MediaFiles {
 	if len(tracks) == 0 {
 		return nil
@@ -171,6 +191,7 @@ func (r *playQueueRepository) clearPlayQueue(userId string) error {
 	return r.delete(Eq{"user_id": userId})
 }
 
+// Clear 清空用户的播放队列。
 func (r *playQueueRepository) Clear(userId string) error {
 	return r.clearPlayQueue(userId)
 }

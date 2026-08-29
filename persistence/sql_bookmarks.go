@@ -12,8 +12,13 @@ import (
 	"github.com/navidrome/navidrome/model/request"
 )
 
+// 书签记录用户在某个曲目中的播放位置（主要用于有声书与播客），
+// 按 (user_id, item_type, item_id) 唯一，各用户互不影响。
+
 const bookmarkTable = "bookmark"
 
+// withBookmark 左连接当前用户的书签并追加播放位置列。
+// 与标注同理用 LEFT JOIN，无书签的条目位置取 0。
 func (r sqlRepository) withBookmark(query SelectBuilder, idField string) SelectBuilder {
 	userID := loggedUser(r.ctx).ID
 	if userID == invalidUserId {
@@ -26,6 +31,7 @@ func (r sqlRepository) withBookmark(query SelectBuilder, idField string) SelectB
 		Columns("coalesce(position, 0) as bookmark_position")
 }
 
+// bmkID 构造定位书签的条件：当前用户 + 实体类型 + 指定 ID。
 func (r sqlRepository) bmkID(itemID ...string) And {
 	return And{
 		Eq{bookmarkTable + ".user_id": loggedUser(r.ctx).ID},
@@ -34,6 +40,8 @@ func (r sqlRepository) bmkID(itemID ...string) And {
 	}
 }
 
+// bmkUpsert 写入书签，同样采用「先更新、无命中再插入」。
+// changed_by 记录发起修改的客户端，便于多端同步时识别来源。
 func (r sqlRepository) bmkUpsert(itemID, comment string, position int64) error {
 	client, _ := request.ClientFrom(r.ctx)
 	user, _ := request.UserFrom(r.ctx)
@@ -66,6 +74,7 @@ func (r sqlRepository) bmkUpsert(itemID, comment string, position int64) error {
 	return err
 }
 
+// AddBookmark 新增或更新书签。
 func (r sqlRepository) AddBookmark(id, comment string, position int64) error {
 	user, _ := request.UserFrom(r.ctx)
 	err := r.bmkUpsert(id, comment, position)
@@ -75,6 +84,7 @@ func (r sqlRepository) AddBookmark(id, comment string, position int64) error {
 	return err
 }
 
+// DeleteBookmark 删除当前用户对该条目的书签。
 func (r sqlRepository) DeleteBookmark(id string) error {
 	user, _ := request.UserFrom(r.ctx)
 	del := Delete(bookmarkTable).Where(r.bmkID(id))
@@ -85,6 +95,7 @@ func (r sqlRepository) DeleteBookmark(id string) error {
 	return err
 }
 
+// bookmark 是书签表的行结构，仅用于内部查询。
 type bookmark struct {
 	UserID    string    `json:"user_id"`
 	ItemID    string    `json:"item_id"`
@@ -96,6 +107,12 @@ type bookmark struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+// GetBookmarks 返回当前用户的所有书签及其关联条目。
+//
+// 分两步查询：先取出有书签的曲目（用 item_id 非空把 LEFT JOIN
+// 收窄为「仅有书签的」），再批量取书签明细并按 ID 关联回去。
+// 之所以不一次查完，是因为曲目侧还需附带标注等信息，
+// 拆开可复用既有的查询构建逻辑。
 func (r sqlRepository) GetBookmarks() (model.Bookmarks, error) {
 	user, _ := request.UserFrom(r.ctx)
 
@@ -111,6 +128,7 @@ func (r sqlRepository) GetBookmarks() (model.Bookmarks, error) {
 	}
 
 	ids := make([]string, len(mfs))
+	// mfMap 建立 ID → 下标索引，避免第二步关联时做嵌套遍历
 	mfMap := make(map[string]int)
 	for i, mf := range mfs {
 		ids[i] = mf.ID
@@ -144,6 +162,7 @@ func (r sqlRepository) GetBookmarks() (model.Bookmarks, error) {
 	return resp, nil
 }
 
+// cleanBookmarks 删除指向已不存在条目的孤立书签，由 GC 调用。
 func (r sqlRepository) cleanBookmarks() error {
 	del := Delete(bookmarkTable).Where(Eq{"item_type": r.tableName}).Where("item_id not in (select id from " + r.tableName + ")")
 	c, err := r.executeSQL(del)

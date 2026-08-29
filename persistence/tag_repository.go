@@ -12,16 +12,23 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+// tagRepository 是标签仓储，覆盖所有标签类型（流派、情绪、厂牌等）。
+// 通用查询能力由 baseTagRepository 提供，本类型只补充写入与维护逻辑。
 type tagRepository struct {
 	*baseTagRepository
 }
 
+// NewTagRepository 创建不限标签类型的标签仓储。
 func NewTagRepository(ctx context.Context, db dbx.Builder) model.TagRepository {
 	return &tagRepository{
 		baseTagRepository: newBaseTagRepository(ctx, db, nil), // nil = no filter, works with all tags
 	}
 }
 
+// Add 批量写入标签，并建立与音乐库的关联。
+// 标签 ID 由名称与取值哈希而来，故重复写入用 on conflict do nothing 即可幂等。
+// 计数先置 0，后续由 UpdateCounts 统一重算。
+// 每 200 条一批，规避 SQLite 参数数量上限。
 func (r *tagRepository) Add(libraryID int, tags ...model.Tag) error {
 	for chunk := range slices.Chunk(tags, 200) {
 		sq := Insert(r.tableName).Columns("id", "tag_name", "tag_value").
@@ -50,6 +57,13 @@ func (r *tagRepository) Add(libraryID int, tags ...model.Tag) error {
 
 // UpdateCounts updates the library_tag table with per-library statistics.
 // Only genres are being updated for now.
+//
+// UpdateCounts 重算标签在各音乐库中的专辑数与曲目数。
+// 目前只统计流派——其他标签类型暂无按数量浏览的需求。
+//
+// SQL 模板对 album 与 media_file 两张表复用：
+// 用 json_tree 展开 tags 列中 $.genre 下的标签 ID
+// （key = 'id' 用于只取 ID 节点），按「标签 × 库」分组计数后 upsert。
 func (r *tagRepository) UpdateCounts() error {
 	template := `
 INSERT INTO library_tag (tag_id, library_id, %[1]s_count)
@@ -74,6 +88,9 @@ DO UPDATE SET %[1]s_count = excluded.%[1]s_count;
 	return nil
 }
 
+// purgeUnused 删除不再被任何专辑或曲目引用的标签，由 GC 调用。
+// 这里展开 tags 的整棵 JSON 树（'$' 而非 '$.genre'），
+// 因为要保留的是所有类型的在用标签。
 func (r *tagRepository) purgeUnused() error {
 	del := Delete(r.tableName).Where(`	
 	id not in (select jt.value

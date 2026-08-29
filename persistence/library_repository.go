@@ -16,15 +16,20 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+// libraryRepository 是音乐库仓储。
 type libraryRepository struct {
 	sqlRepository
 }
 
+// 库 ID 到路径的进程级缓存。
+// 路径在把数据库中的相对路径还原为绝对路径时被频繁使用，
+// 而库数量少、极少变动，故常驻内存。
 var (
 	libCache = map[int]string{}
 	libLock  sync.RWMutex
 )
 
+// NewLibraryRepository 创建音乐库仓储。
 func NewLibraryRepository(ctx context.Context, db dbx.Builder) model.LibraryRepository {
 	r := &libraryRepository{}
 	r.ctx = ctx
@@ -33,6 +38,7 @@ func NewLibraryRepository(ctx context.Context, db dbx.Builder) model.LibraryRepo
 	return r
 }
 
+// Get 按 ID 读取音乐库。
 func (r *libraryRepository) Get(id int) (*model.Library, error) {
 	sq := r.newSelect().Columns("*").Where(Eq{"id": id})
 	var res model.Library
@@ -40,6 +46,9 @@ func (r *libraryRepository) Get(id int) (*model.Library, error) {
 	return &res, err
 }
 
+// GetPath 返回音乐库的根路径，优先走缓存。
+// 未命中时一次性加载全部库刷新缓存，而不是只查这一条，
+// 因为调用通常成批发生，整体加载更划算。
 func (r *libraryRepository) GetPath(id int) (string, error) {
 	l := func() string {
 		libLock.RLock()
@@ -70,6 +79,15 @@ func (r *libraryRepository) GetPath(id int) (string, error) {
 	}
 }
 
+// Put 新增或更新音乐库。
+//
+// 默认库（ID=1）的路径不允许变更：它由配置项 MusicFolder 决定，
+// 改路径会让已入库的相对路径全部失效。
+//
+// ID 为 0 时走自增插入；否则先尝试 UPDATE，
+// 影响行数为 0 再插入——用于支持指定 ID 建库（如迁移场景）。
+//
+// 每次写入后都为所有管理员补齐授权，保证新建的库对管理员立即可见。
 func (r *libraryRepository) Put(l *model.Library) error {
 	if l.ID == model.DefaultLibraryID {
 		currentLib, err := r.Get(1)
@@ -134,6 +152,8 @@ ON CONFLICT (user_id, library_id) DO NOTHING;`,
 
 // TODO Remove this method when we have a proper UI to add libraries
 // This is a temporary method to store the music folder path from the config in the DB
+// StoreMusicFolder 把配置中的 MusicFolder 同步到默认库，
+// 是尚无多库管理界面时的过渡手段。
 func (r *libraryRepository) StoreMusicFolder() error {
 	sq := Update(r.tableName).Set("path", conf.Server.MusicFolder).
 		Set("updated_at", time.Now()).
@@ -147,6 +167,7 @@ func (r *libraryRepository) StoreMusicFolder() error {
 	return err
 }
 
+// AddArtist 建立艺人与音乐库的归属关系，重复调用幂等。
 func (r *libraryRepository) AddArtist(id int, artistID string) error {
 	sq := Insert("library_artist").Columns("library_id", "artist_id").Values(id, artistID).
 		Suffix(`on conflict(library_id, artist_id) do nothing`)
@@ -157,6 +178,7 @@ func (r *libraryRepository) AddArtist(id int, artistID string) error {
 	return nil
 }
 
+// ScanBegin 标记扫描开始。last_scan_started_at 非零即表示扫描进行中。
 func (r *libraryRepository) ScanBegin(id int, fullScan bool) error {
 	sq := Update(r.tableName).
 		Set("last_scan_started_at", time.Now()).
@@ -166,6 +188,7 @@ func (r *libraryRepository) ScanBegin(id int, fullScan bool) error {
 	return err
 }
 
+// ScanEnd 标记扫描结束，并把开始时间清零以解除「进行中」状态。
 func (r *libraryRepository) ScanEnd(id int) error {
 	sq := Update(r.tableName).
 		Set("last_scan_at", time.Now()).
@@ -179,18 +202,26 @@ func (r *libraryRepository) ScanEnd(id int) error {
 	// https://www.sqlite.org/pragma.html#pragma_optimize
 	// Use mask 0x10000 to check table sizes without running ANALYZE
 	// Running ANALYZE can cause query planner issues with expression-based collation indexes
+	// 掩码 0x10000 只让 SQLite 检查表大小而不执行 ANALYZE：
+	// 完整 ANALYZE 会干扰基于表达式排序规则的索引，导致查询计划变差
 	if conf.Server.DevOptimizeDB {
 		_, err = r.executeSQL(Expr("PRAGMA optimize=0x10000;"))
 	}
 	return err
 }
 
+// ScanInProgress 判断是否有任一音乐库正在扫描。
 func (r *libraryRepository) ScanInProgress() (bool, error) {
 	query := r.newSelect().Where(NotEq{"last_scan_started_at": time.Time{}})
 	count, err := r.count(query)
 	return count > 0, err
 }
 
+// RefreshStats 重算音乐库的各项统计。
+//
+// 八项统计彼此独立，用 run.Parallel 并发查询以缩短总耗时。
+// 除「缺失文件数」外均排除 missing 记录；
+// 文件夹数只统计含音频的目录，避免把空目录计入。
 func (r *libraryRepository) RefreshStats(id int) error {
 	var songsRes, albumsRes, artistsRes, foldersRes, filesRes, missingRes struct{ Count int64 }
 	var sizeRes struct{ Sum int64 }
@@ -248,6 +279,8 @@ func (r *libraryRepository) RefreshStats(id int) error {
 	return err
 }
 
+// Delete 删除音乐库，仅管理员可操作。
+// 默认库（ID=1）不可删除——系统假定它始终存在。
 func (r *libraryRepository) Delete(id int) error {
 	if !loggedUser(r.ctx).IsAdmin {
 		return model.ErrNotAuthorized
@@ -269,6 +302,7 @@ func (r *libraryRepository) Delete(id int) error {
 	return nil
 }
 
+// GetAll 返回全部音乐库。
 func (r *libraryRepository) GetAll(ops ...model.QueryOptions) (model.Libraries, error) {
 	sq := r.newSelect(ops...).Columns("*")
 	res := model.Libraries{}
@@ -276,13 +310,16 @@ func (r *libraryRepository) GetAll(ops ...model.QueryOptions) (model.Libraries, 
 	return res, err
 }
 
+// CountAll 统计音乐库数量。
 func (r *libraryRepository) CountAll(ops ...model.QueryOptions) (int64, error) {
 	sq := r.newSelect(ops...)
 	return r.count(sq)
 }
 
 // User-library association methods
+// 以下为音乐库与用户的授权关系查询。
 
+// GetUsersWithLibraryAccess 返回有权访问该库的所有用户。
 func (r *libraryRepository) GetUsersWithLibraryAccess(libraryID int) (model.Users, error) {
 	sel := Select("u.*").
 		From("user u").
@@ -296,6 +333,8 @@ func (r *libraryRepository) GetUsersWithLibraryAccess(libraryID int) (model.User
 }
 
 // REST interface methods
+// 以下实现 rest 接口。音乐库 ID 是整数，
+// 而 REST 层统一用字符串，故需转换并对非法值返回 404。
 
 func (r *libraryRepository) Count(options ...rest.QueryOptions) (int64, error) {
 	return r.CountAll(r.parseRestOptions(r.ctx, options...))
@@ -322,6 +361,7 @@ func (r *libraryRepository) NewInstance() interface{} {
 	return &model.Library{}
 }
 
+// Save 新建音乐库，清空 ID 以走自增插入，避免客户端指定 ID。
 func (r *libraryRepository) Save(entity interface{}) (string, error) {
 	lib := entity.(*model.Library)
 	lib.ID = 0 // Reset ID to ensure we create a new library
@@ -332,6 +372,7 @@ func (r *libraryRepository) Save(entity interface{}) (string, error) {
 	return strconv.Itoa(lib.ID), nil
 }
 
+// Update 更新音乐库。cols 被忽略：Put 内部固定更新一组列。
 func (r *libraryRepository) Update(id string, entity interface{}, cols ...string) error {
 	lib := entity.(*model.Library)
 	idInt, err := strconv.Atoi(id)

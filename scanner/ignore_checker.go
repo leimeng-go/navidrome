@@ -15,6 +15,10 @@ import (
 // IgnoreChecker manages .ndignore patterns using a stack-based approach.
 // Use Push() to add patterns when entering a folder, Pop() when leaving,
 // and ShouldIgnore() to check if a path should be ignored.
+//
+// IgnoreChecker 以栈的方式管理 .ndignore 忽略规则，语法同 .gitignore。
+// 用栈是为了实现规则的层级继承：子目录同时受自身与所有祖先目录的规则约束。
+// 非并发安全——每次目录遍历各自持有一个实例。
 type IgnoreChecker struct {
 	fsys            fs.FS
 	patternStack    [][]string        // Stack of patterns for each folder level
@@ -53,6 +57,11 @@ func (ic *IgnoreChecker) Pop() {
 // without recursively walking the tree. It handles the common pattern of
 // pushing all parent directories from root to the target.
 // This method is optimized to compile patterns only once at the end.
+//
+// PushAllParents 一次性压入从根到目标路径沿途所有目录的规则。
+// 定向扫描直接从中间目录起步，必须先补齐上层规则，
+// 否则会遗漏祖先目录定义的忽略项。
+// 规则编译较昂贵，故全部压栈后只编译一次。
 func (ic *IgnoreChecker) PushAllParents(ctx context.Context, targetPath string) error {
 	if targetPath == "." || targetPath == "" {
 		// Simple case: just push root
@@ -103,6 +112,10 @@ func (ic *IgnoreChecker) ShouldIgnore(ctx context.Context, relPath string) bool 
 // loadPatternsFromFolder reads the .ndignore file in the specified folder and returns the patterns.
 // If the file doesn't exist, returns an empty slice.
 // If the file exists but is empty, returns a pattern to ignore everything ("**/*").
+//
+// loadPatternsFromFolder 读取目录下的 .ndignore 规则。
+// 空文件的语义是「忽略整个目录」——这是约定俗成的用法：
+// 放一个空 .ndignore 即可让扫描器跳过该目录。
 func (ic *IgnoreChecker) loadPatternsFromFolder(ctx context.Context, folder string) []string {
 	ignoreFilePath := path.Join(folder, consts.ScanIgnoreFile)
 	var patterns []string

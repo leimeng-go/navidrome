@@ -18,6 +18,12 @@ import (
 // walkDirTree recursively walks the directory tree starting from the given targetFolders.
 // If no targetFolders are provided, it starts from the root folder (".").
 // It returns a channel of folderEntry pointers representing each folder found.
+//
+// walkDirTree 递归遍历目录树，通过 channel 流式产出目录条目，
+// 使调用方无需等待整棵树遍历完毕即可开始处理。
+//
+// 目标目录不存在时只跳过而不报错：它可能在监听器发现变更到扫描执行之间被删除，
+// 跳过后该目录仍留在 lastUpdates 中，会在收尾时被正确标记为缺失。
 func walkDirTree(ctx context.Context, job *scanJob, targetFolders ...string) (<-chan *folderEntry, error) {
 	results := make(chan *folderEntry)
 	folders := targetFolders
@@ -61,6 +67,15 @@ func walkDirTree(ctx context.Context, job *scanJob, targetFolders ...string) (<-
 	return results, nil
 }
 
+// walkFolder 递归处理单个目录。
+//
+// 采用后序遍历——先递归子目录，再产出自身。
+// 这保证子目录先于父目录入库，满足外键约束（父目录 ID 需已存在）。
+//
+// 忽略规则用栈维护：进入目录时压入其 .ndignore 规则，
+// 离开时弹出，从而实现规则的层级继承。
+//
+// 单个目录读取失败只跳过，不中断整棵树的遍历。
 func walkFolder(ctx context.Context, job *scanJob, currentFolder string, checker *IgnoreChecker, results chan<- *folderEntry) error {
 	// Push patterns for this folder onto the stack
 	_ = checker.Push(ctx, currentFolder)
@@ -90,6 +105,14 @@ func walkFolder(ctx context.Context, job *scanJob, currentFolder string, checker
 	return nil
 }
 
+// loadDir 读取目录内容，把条目分类为音频、图片、播放列表与子目录。
+//
+// 必须先 Stat 确认目录存在再创建条目：
+// createFolderEntry 会把该目录从 lastUpdates 中移除，
+// 对不存在的目录调用会让它逃过「标记缺失」的处理。
+//
+// 目录的 modTime 取自身与所有直属文件中的最晚值，
+// 因为部分文件系统在文件内容变更时不会更新目录时间戳。
 func loadDir(ctx context.Context, job *scanJob, dirPath string, checker *IgnoreChecker) (folder *folderEntry, children []string, err error) {
 	// Check if directory exists before creating the folder entry
 	// This is important to avoid removing the folder from lastUpdates if it doesn't exist
@@ -165,6 +188,13 @@ func loadDir(ctx context.Context, job *scanJob, dirPath string, checker *IgnoreC
 // It also detects when it is "stuck" with an error in the same directory over and over.
 // In this case, it stops and returns whatever it was able to read until it got stuck.
 // See discussion here: https://github.com/navidrome/navidrome/issues/1164#issuecomment-881922850
+//
+// fullReadDir 尽力读取目录下所有条目，跳过读取出错的项。
+//
+// 某些文件系统（尤其是网络挂载）会对同一条目反复返回相同错误，
+// 导致循环无法推进；故记录上一次的错误信息，
+// 连续出现相同错误即判定卡住并返回已读到的部分。
+// 最后排序以保证遍历顺序稳定。
 func fullReadDir(ctx context.Context, dir fs.ReadDirFile) []fs.DirEntry {
 	var allEntries []fs.DirEntry
 	var prevErrStr = ""
@@ -194,6 +224,10 @@ func fullReadDir(ctx context.Context, dir fs.ReadDirFile) []fs.DirEntry {
 // sending a request to the operating system to follow the symbolic link.
 // originally copied from github.com/karrick/godirwalk, modified to use dirEntry for
 // efficiency for go 1.16 and beyond
+//
+// isDirOrSymlinkToDir 判断条目是目录，或是指向目录的软链接。
+// 软链接需额外 Stat 才能确定目标类型，且受 FollowSymlinks 配置控制
+// （关闭时一律不跟随，可避免软链接成环导致的无限递归）。
 func isDirOrSymlinkToDir(fsys fs.FS, baseDir string, dirEnt fs.DirEntry) (bool, error) {
 	if dirEnt.IsDir() {
 		return true, nil
@@ -214,6 +248,7 @@ func isDirOrSymlinkToDir(fsys fs.FS, baseDir string, dirEnt fs.DirEntry) (bool, 
 }
 
 // isDirReadable returns true if the directory represented by dirEnt is readable
+// isDirReadable 通过试打开判断目录是否可读，提前跳过无权限的目录。
 func isDirReadable(ctx context.Context, fsys fs.FS, dirPath string) bool {
 	dir, err := fsys.Open(dirPath)
 	if err != nil {
@@ -228,6 +263,7 @@ func isDirReadable(ctx context.Context, fsys fs.FS, dirPath string) bool {
 }
 
 // List of special directories to ignore
+// 各操作系统与 NAS 的特殊目录，恒不扫描
 var ignoredDirs = []string{
 	"$RECYCLE.BIN",
 	"#snapshot",
@@ -238,6 +274,8 @@ var ignoredDirs = []string{
 }
 
 // isDirIgnored returns true if the directory represented by dirEnt should be ignored
+// isDirIgnored 判断目录是否应被忽略：隐藏目录或上述特殊目录。
+// 「..」开头的名字例外，因为存在以省略号开头的专辑目录名。
 func isDirIgnored(name string) bool {
 	// allows Album folders for albums which eg start with ellipses
 	if strings.HasPrefix(name, ".") && !strings.HasPrefix(name, "..") {
@@ -249,6 +287,7 @@ func isDirIgnored(name string) bool {
 	return false
 }
 
+// isEntryIgnored 判断文件条目是否应被忽略（隐藏文件），规则同上。
 func isEntryIgnored(name string) bool {
 	return strings.HasPrefix(name, ".") && !strings.HasPrefix(name, "..")
 }

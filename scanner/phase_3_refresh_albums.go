@@ -24,6 +24,11 @@ import (
 //  4. Logs the results and finalizes the phase by reporting the total number of
 //     refreshed and skipped albums.
 //  5. As a last step, it refreshes the artist statistics to reflect the changes
+//
+// phaseRefreshAlbums 是扫描的第三阶段：依据曲目的最新元数据重建专辑信息。
+//
+// 阶段 1 中的专辑是按目录逐个生成的，可能不完整
+// （同一张专辑的曲目可散落在多个目录）；这里按专辑汇总全部曲目重新计算。
 type phaseRefreshAlbums struct {
 	ds        model.DataStore
 	ctx       context.Context
@@ -44,6 +49,8 @@ func (p *phaseRefreshAlbums) producer() ppl.Producer[*model.Album] {
 	return ppl.NewProducer(p.produce, ppl.Name("load albums from db"))
 }
 
+// produce 产出本轮被「触碰」过的专辑（有曲目新增、变更或缺失）。
+// 未被触碰的专辑无需重算，这是本阶段的主要剪枝手段。
 func (p *phaseRefreshAlbums) produce(put func(album *model.Album)) error {
 	count := 0
 	for _, lib := range p.state.libraries {
@@ -68,6 +75,7 @@ func (p *phaseRefreshAlbums) produce(put func(album *model.Album)) error {
 	return nil
 }
 
+// stages 定义两个环节：并发比对筛选、串行写库。
 func (p *phaseRefreshAlbums) stages() []ppl.Stage[*model.Album] {
 	return []ppl.Stage[*model.Album]{
 		ppl.NewStage(p.filterUnmodified, ppl.Name("filter unmodified"), ppl.Concurrency(5)),
@@ -75,6 +83,13 @@ func (p *phaseRefreshAlbums) stages() []ppl.Stage[*model.Album] {
 	}
 }
 
+// filterUnmodified 重建专辑信息并与库中现状比对，无变化则丢弃。
+//
+// 「被触碰」不等于「有变化」——例如曲目文件被改写但专辑级字段不变。
+// 此处比对可避免无谓的写入及其引发的 updated_at 变动
+// （后者会干扰「最近更新」类视图）。
+//
+// 无曲目的专辑同样跳过：交由收尾阶段的 GC 统一清理。
 func (p *phaseRefreshAlbums) filterUnmodified(album *model.Album) (*model.Album, error) {
 	mfs, err := p.ds.MediaFile(p.ctx).GetAll(model.QueryOptions{Filters: squirrel.Eq{"album_id": album.ID}})
 	if err != nil {
@@ -98,6 +113,8 @@ func (p *phaseRefreshAlbums) filterUnmodified(album *model.Album) (*model.Album,
 	return &newAlbum, nil
 }
 
+// refreshAlbum 写入更新后的专辑。
+// album 为 nil 表示上一环节已判定无需更新。
 func (p *phaseRefreshAlbums) refreshAlbum(album *model.Album) (*model.Album, error) {
 	if album == nil {
 		return nil, nil
@@ -113,6 +130,10 @@ func (p *phaseRefreshAlbums) refreshAlbum(album *model.Album) (*model.Album, err
 	return album, nil
 }
 
+// finalize 重算专辑与艺人的播放统计。
+//
+// 必须放在此处：曲目的播放次数可能因移动、合并而重新归属，
+// 需要在专辑数据稳定后按曲目重新聚合。
 func (p *phaseRefreshAlbums) finalize(err error) error {
 	if err != nil {
 		return err

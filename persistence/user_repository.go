@@ -22,15 +22,19 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+// userRepository 是用户仓储，兼管密码加密与音乐库授权关系。
 type userRepository struct {
 	sqlRepository
 }
 
+// dbUser 是 model.User 的数据库映射层，
+// 附带把用户可访问的音乐库聚合成的 JSON。
 type dbUser struct {
 	*model.User   `structs:",flatten"`
 	LibrariesJSON string `structs:"-" json:"-"`
 }
 
+// PostScan 解析用户可访问的音乐库列表。
 func (u *dbUser) PostScan() error {
 	if u.LibrariesJSON != "" {
 		if err := json.Unmarshal([]byte(u.LibrariesJSON), &u.User.Libraries); err != nil {
@@ -46,11 +50,14 @@ func (us dbUsers) toModels() model.Users {
 	return slice.Map(us, func(u dbUser) model.User { return *u.User })
 }
 
+// 密码加密密钥全进程只初始化一次。
 var (
 	once   sync.Once
 	encKey []byte
 )
 
+// NewUserRepository 创建用户仓储。
+// password 注册为非法过滤字段，杜绝通过 REST 查询参数按密码检索。
 func NewUserRepository(ctx context.Context, db dbx.Builder) model.UserRepository {
 	r := &userRepository{}
 	r.ctx = ctx
@@ -68,6 +75,9 @@ func NewUserRepository(ctx context.Context, db dbx.Builder) model.UserRepository
 }
 
 // selectUserWithLibraries returns a SelectBuilder that includes library information
+// selectUserWithLibraries 构建查询并把用户可访问的音乐库聚合为 JSON 数组。
+// FILTER (WHERE library.id IS NOT NULL) 用于排除 LEFT JOIN 产生的空行，
+// 否则未授权任何库的用户会得到 [null] 而非 []。
 func (r *userRepository) selectUserWithLibraries(options ...model.QueryOptions) SelectBuilder {
 	return r.newSelect(options...).
 		Columns(`user.*`,
@@ -87,10 +97,12 @@ func (r *userRepository) selectUserWithLibraries(options ...model.QueryOptions) 
 		GroupBy("user.id")
 }
 
+// CountAll 统计用户总数。
 func (r *userRepository) CountAll(qo ...model.QueryOptions) (int64, error) {
 	return r.count(Select(), qo...)
 }
 
+// Get 按 ID 读取用户（含可访问的音乐库）。
 func (r *userRepository) Get(id string) (*model.User, error) {
 	sel := r.selectUserWithLibraries().Where(Eq{"user.id": id})
 	var res dbUser
@@ -101,6 +113,7 @@ func (r *userRepository) Get(id string) (*model.User, error) {
 	return res.User, nil
 }
 
+// GetAll 查询全部用户。
 func (r *userRepository) GetAll(options ...model.QueryOptions) (model.Users, error) {
 	sel := r.selectUserWithLibraries(options...)
 	var res dbUsers
@@ -111,6 +124,15 @@ func (r *userRepository) GetAll(options ...model.QueryOptions) (model.Users, err
 	return res.toModels(), nil
 }
 
+// Put 保存用户，并维护其音乐库授权。
+//
+// 这里不用通用的 put：需要先尝试 UPDATE、依据影响行数判断是否为新用户，
+// 因为后续的库授权逻辑对新老用户处理不同。
+// current_password 只用于校验，不能落库。
+//
+// 授权规则：管理员每次保存都补齐全部库（新增库后管理员应自动可见）；
+// 普通用户只在创建时授予标记为「新用户默认」的库，
+// 之后的授权变更交由管理界面显式管理，避免覆盖手工调整。
 func (r *userRepository) Put(u *model.User) error {
 	if u.ID == "" {
 		u.ID = id.NewRandom()
@@ -165,6 +187,8 @@ func (r *userRepository) Put(u *model.User) error {
 	return nil
 }
 
+// FindFirstAdmin 返回最早创建的管理员（按 updated_at 取第一条），
+// 用于需要一个「系统管理员」身份执行后台操作的场景。
 func (r *userRepository) FindFirstAdmin() (*model.User, error) {
 	sel := r.selectUserWithLibraries(model.QueryOptions{Sort: "updated_at", Max: 1}).Where(Eq{"user.is_admin": true})
 	var usr dbUser
@@ -175,6 +199,8 @@ func (r *userRepository) FindFirstAdmin() (*model.User, error) {
 	return usr.User, nil
 }
 
+// FindByUsername 按用户名查找，大小写不敏感（COLLATE NOCASE），
+// 以便用户登录时不必严格匹配大小写。
 func (r *userRepository) FindByUsername(username string) (*model.User, error) {
 	sel := r.selectUserWithLibraries().Where(Expr("user.user_name = ? COLLATE NOCASE", username))
 	var usr dbUser
@@ -185,6 +211,8 @@ func (r *userRepository) FindByUsername(username string) (*model.User, error) {
 	return usr.User, nil
 }
 
+// FindByUsernameWithPassword 在 FindByUsername 基础上解密密码。
+// Subsonic API 的部分认证方式需要明文密码参与校验，故必须可逆存储。
 func (r *userRepository) FindByUsernameWithPassword(username string) (*model.User, error) {
 	usr, err := r.FindByUsername(username)
 	if err != nil {
@@ -194,18 +222,23 @@ func (r *userRepository) FindByUsernameWithPassword(username string) (*model.Use
 	return usr, nil
 }
 
+// UpdateLastLoginAt 记录最近一次登录时间。
 func (r *userRepository) UpdateLastLoginAt(id string) error {
 	upd := Update(r.tableName).Where(Eq{"id": id}).Set("last_login_at", time.Now())
 	_, err := r.executeSQL(upd)
 	return err
 }
 
+// UpdateLastAccessAt 记录最近一次访问时间，用于展示活跃状态。
 func (r *userRepository) UpdateLastAccessAt(id string) error {
 	now := time.Now()
 	upd := Update(r.tableName).Where(Eq{"id": id}).Set("last_access_at", now)
 	_, err := r.executeSQL(upd)
 	return err
 }
+
+// 以下实现 rest 接口：用户数据敏感，每个方法都需先做权限判断。
+// 除读取本人资料外，均限管理员操作。
 
 func (r *userRepository) Count(options ...rest.QueryOptions) (int64, error) {
 	usr := loggedUser(r.ctx)
@@ -243,6 +276,7 @@ func (r *userRepository) NewInstance() any {
 	return &model.User{}
 }
 
+// Save 新建用户，仅管理员可调用。
 func (r *userRepository) Save(entity any) (string, error) {
 	usr := loggedUser(r.ctx)
 	if !usr.IsAdmin {
@@ -259,6 +293,10 @@ func (r *userRepository) Save(entity any) (string, error) {
 	return u.ID, err
 }
 
+// Update 更新用户资料。
+//
+// 普通用户只能改自己，且须开启 EnableUserEditing；
+// 强制回写 IsAdmin=false 与原用户名，防止自行提权或改名。
 func (r *userRepository) Update(id string, entity any, _ ...string) error {
 	u := entity.(*model.User)
 	u.ID = id
@@ -291,6 +329,12 @@ func (r *userRepository) Update(id string, entity any, _ ...string) error {
 	return err
 }
 
+// validatePasswordChange 校验改密请求。
+//
+// 管理员改他人密码无需原密码，直接放行。
+// 其余情况必须提供正确的当前密码；
+// 唯一例外是密码为系统自动生成（带 PasswordAutogenPrefix 前缀）时，
+// 用户本就不知道原密码，此时允许直接设置新密码。
 func validatePasswordChange(newUser *model.User, logged *model.User) error {
 	err := &rest.ValidationError{Errors: map[string]string{}}
 	if logged.IsAdmin && newUser.ID != logged.ID {
@@ -317,6 +361,8 @@ func validatePasswordChange(newUser *model.User, logged *model.User) error {
 	return nil
 }
 
+// validateUsernameUnique 校验用户名唯一。
+// 同名记录若就是自己则允许（更新时未改名的情形）。
 func validateUsernameUnique(r model.UserRepository, u *model.User) error {
 	usr, err := r.FindByUsername(u.UserName)
 	if errors.Is(err, model.ErrNotFound) {
@@ -331,6 +377,7 @@ func validateUsernameUnique(r model.UserRepository, u *model.User) error {
 	return nil
 }
 
+// Delete 删除用户，仅管理员可调用。
 func (r *userRepository) Delete(id string) error {
 	usr := loggedUser(r.ctx)
 	if !usr.IsAdmin {
@@ -343,11 +390,22 @@ func (r *userRepository) Delete(id string) error {
 	return err
 }
 
+// keyTo32Bytes 把任意长度的密钥字符串哈希为 AES 所需的 32 字节。
 func keyTo32Bytes(input string) []byte {
 	data := sha256.Sum256([]byte(input))
 	return data[0:]
 }
 
+// initPasswordEncryptionKey 初始化密码加密密钥，并在必要时迁移既有密码。
+//
+// 未配置自定义密钥时使用内置默认密钥（等同于「未加密」，仅做混淆）。
+//
+// 配置了自定义密钥时，用密钥的哈希值作为指纹存入 property 表：
+//   - 指纹已存在且一致：直接使用；
+//   - 指纹已存在但不一致：密钥被改动，所有密码都将无法解密，
+//     此处直接报错阻止启动，比让用户全部登录失败更容易排查；
+//   - 指纹不存在：说明是首次启用自定义密钥，
+//     先用默认密钥解密全部密码，再用新密钥逐个重新加密，最后写入指纹。
 func (r *userRepository) initPasswordEncryptionKey() error {
 	encKey = keyTo32Bytes(consts.DefaultEncryptionKey)
 	if conf.Server.PasswordEncryptionKey == "" {
@@ -407,6 +465,7 @@ func (r *userRepository) initPasswordEncryptionKey() error {
 }
 
 // encrypts u.NewPassword
+// encryptPassword 就地加密 u.NewPassword。
 func (r *userRepository) encryptPassword(u *model.User) error {
 	encPassword, err := utils.Encrypt(r.ctx, encKey, u.NewPassword)
 	if err != nil {
@@ -418,6 +477,7 @@ func (r *userRepository) encryptPassword(u *model.User) error {
 }
 
 // decrypts u.Password
+// decryptPassword 就地解密 u.Password 为明文。
 func (r *userRepository) decryptPassword(u *model.User) error {
 	plaintext, err := utils.Decrypt(r.ctx, encKey, u.Password)
 	if err != nil {
@@ -428,6 +488,7 @@ func (r *userRepository) decryptPassword(u *model.User) error {
 	return nil
 }
 
+// decryptAllPasswords 批量解密，供密钥迁移使用。
 func (r *userRepository) decryptAllPasswords(users model.Users) error {
 	for i := range users {
 		if err := r.decryptPassword(&users[i]); err != nil {
@@ -438,7 +499,9 @@ func (r *userRepository) decryptAllPasswords(users model.Users) error {
 }
 
 // Library association methods
+// 以下为用户与音乐库的授权关系维护。
 
+// GetUserLibraries 返回用户被授权访问的音乐库，按名称排序。
 func (r *userRepository) GetUserLibraries(userID string) (model.Libraries, error) {
 	sel := Select("l.*").
 		From("library l").
@@ -451,6 +514,8 @@ func (r *userRepository) GetUserLibraries(userID string) (model.Libraries, error
 	return res, err
 }
 
+// SetUserLibraries 全量替换用户的音乐库授权。
+// 传入空列表即撤销全部授权。
 func (r *userRepository) SetUserLibraries(userID string, libraryIDs []int) error {
 	// Remove existing associations
 	delSql := Delete("user_library").Where(Eq{"user_id": userID})

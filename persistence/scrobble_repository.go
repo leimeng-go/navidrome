@@ -9,10 +9,14 @@ import (
 	"github.com/pocketbase/dbx"
 )
 
+// scrobbleRepository 是本地播放历史仓储，只追加不修改。
+// 与 scrobble_buffer 不同，这里记录的是已发生的播放事件本身，
+// 而非待上报到外部服务的队列。
 type scrobbleRepository struct {
 	sqlRepository
 }
 
+// NewScrobbleRepository 创建播放历史仓储。
 func NewScrobbleRepository(ctx context.Context, db dbx.Builder) model.ScrobbleRepository {
 	r := &scrobbleRepository{}
 	r.ctx = ctx
@@ -21,6 +25,7 @@ func NewScrobbleRepository(ctx context.Context, db dbx.Builder) model.ScrobbleRe
 	return r
 }
 
+// RecordScrobble 记录一次播放。时间以 Unix 秒存储，便于按区间聚合统计。
 func (r *scrobbleRepository) RecordScrobble(mediaFileID string, submissionTime time.Time) error {
 	userID := loggedUser(r.ctx).ID
 	values := map[string]interface{}{
