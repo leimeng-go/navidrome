@@ -13,6 +13,12 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// handleStream 处理分享曲目的流式播放。
+//
+// 可 seek 的流交给 ServeContent 以支持 Range 请求；
+// 转码流长度未知，只能顺序输出并声明不支持 Range，
+// 部分客户端需要 Content-Length 才肯播放，故提供按码率估算的可选值。
+// HEAD 请求仍需把流读空，否则转码进程不会退出。
 func (pub *Router) handleStream(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	p := req.Params(r)
@@ -71,12 +77,14 @@ func (pub *Router) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// shareTrackInfo 是从分享令牌中解出的播放信息。
 type shareTrackInfo struct {
 	id      string
 	format  string
 	bitrate int
 }
 
+// decodeStreamInfo 校验并解析分享令牌，取出曲目 ID 与转码参数。
 func decodeStreamInfo(tokenString string) (shareTrackInfo, error) {
 	token, err := auth.TokenAuth.Decode(tokenString)
 	if err != nil {

@@ -22,6 +22,7 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// newResponse 构造一个成功状态的空响应骨架。
 func newResponse() *responses.Subsonic {
 	return &responses.Subsonic{
 		Status:        responses.StatusOK,
@@ -32,11 +33,13 @@ func newResponse() *responses.Subsonic {
 	}
 }
 
+// subError 是带 Subsonic 错误码的错误。
 type subError struct {
 	code     int32
 	messages []interface{}
 }
 
+// newError 构造 Subsonic 错误，message 支持 fmt 风格的格式化参数。
 func newError(code int32, message ...interface{}) error {
 	return subError{
 		code:     code,
@@ -61,6 +64,7 @@ func (e subError) Error() string {
 	return msg
 }
 
+// getUser 从上下文取当前用户，不存在时返回零值。
 func getUser(ctx context.Context) model.User {
 	user, ok := request.UserFrom(ctx)
 	if ok {
@@ -69,6 +73,7 @@ func getUser(ctx context.Context) model.User {
 	return model.User{}
 }
 
+// sortName 依据 PreferSortTags 配置在排序标签与推导出的排序名之间取舍。
 func sortName(sortName, orderName string) string {
 	if conf.Server.PreferSortTags {
 		return cmp.Or(
@@ -93,6 +98,7 @@ func getArtistAlbumCount(a *model.Artist) int32 {
 	}
 }
 
+// toArtist 转换为旧版 Artist 响应结构。
 func toArtist(r *http.Request, a model.Artist) responses.Artist {
 	artist := responses.Artist{
 		Id:             a.ID,
@@ -107,6 +113,7 @@ func toArtist(r *http.Request, a model.Artist) responses.Artist {
 	return artist
 }
 
+// toArtistID3 转换为 ID3 风格的艺人响应结构。
 func toArtistID3(r *http.Request, a model.Artist) responses.ArtistID3 {
 	artist := responses.ArtistID3{
 		Id:             a.ID,
@@ -123,6 +130,8 @@ func toArtistID3(r *http.Request, a model.Artist) responses.ArtistID3 {
 	return artist
 }
 
+// toOSArtistID3 构造 OpenSubsonic 扩展的艺人字段。
+// 已知不兼容的老客户端会解析失败，故对其返回 nil 以退回纯 Subsonic 响应。
 func toOSArtistID3(ctx context.Context, a model.Artist) *responses.OpenSubsonicArtistID3 {
 	player, _ := request.PlayerFrom(ctx)
 	if strings.Contains(conf.Server.Subsonic.LegacyClients, player.Client) {
@@ -136,6 +145,7 @@ func toOSArtistID3(ctx context.Context, a model.Artist) *responses.OpenSubsonicA
 	return &artist
 }
 
+// toGenres 转换风格列表。
 func toGenres(genres model.Genres) *responses.Genres {
 	response := make([]responses.Genre, len(genres))
 	for i, g := range genres {
@@ -148,6 +158,7 @@ func toGenres(genres model.Genres) *responses.Genres {
 	return &responses.Genres{Genre: response}
 }
 
+// toItemGenres 转换为 OpenSubsonic 的风格条目。
 func toItemGenres(genres model.Genres) []responses.ItemGenre {
 	itemGenres := make([]responses.ItemGenre, len(genres))
 	for i, g := range genres {
@@ -156,6 +167,7 @@ func toItemGenres(genres model.Genres) []responses.ItemGenre {
 	return itemGenres
 }
 
+// getTranscoding 从上下文取当前播放器的转码格式与码率上限。
 func getTranscoding(ctx context.Context) (format string, bitRate int) {
 	if trc, ok := request.TranscodingFrom(ctx); ok {
 		format = trc.TargetFormat
@@ -166,6 +178,8 @@ func getTranscoding(ctx context.Context) (format string, bitRate int) {
 	return
 }
 
+// childFromMediaFile 把媒体文件转换为 Subsonic 的 Child 结构。
+// 转码格式与原格式不同时额外声明转码后的类型，供客户端预判。
 func childFromMediaFile(ctx context.Context, mf model.MediaFile) responses.Child {
 	child := responses.Child{}
 	child.Id = mf.ID
@@ -210,6 +224,8 @@ func childFromMediaFile(ctx context.Context, mf model.MediaFile) responses.Child
 	return child
 }
 
+// osChildFromMediaFile 构造 OpenSubsonic 扩展的曲目字段。
+// 对配置为 LegacyClients 的客户端返回 nil，避免其解析扩展字段出错。
 func osChildFromMediaFile(ctx context.Context, mf model.MediaFile) *responses.OpenSubsonicChild {
 	player, _ := request.PlayerFrom(ctx)
 	if strings.Contains(conf.Server.Subsonic.LegacyClients, player.Client) {
@@ -262,6 +278,7 @@ func osChildFromMediaFile(ctx context.Context, mf model.MediaFile) *responses.Op
 	return &child
 }
 
+// artistRefs 把参与者列表转换为艺人引用。
 func artistRefs(participants model.ParticipantList) []responses.ArtistID3Ref {
 	return slice.Map(participants, func(p model.Participant) responses.ArtistID3Ref {
 		return responses.ArtistID3Ref{
@@ -271,6 +288,11 @@ func artistRefs(participants model.ParticipantList) []responses.ArtistID3Ref {
 	})
 }
 
+// fakePath 依据元数据合成一个虚拟路径。
+//
+// 不直接暴露真实路径以免泄露服务器目录结构；
+// 但许多客户端依赖 path 字段做展示与分组，故需构造一个形似的路径。
+// 仅当播放器显式配置 ReportRealPath 时才返回真实路径。
 func fakePath(mf model.MediaFile) string {
 	builder := strings.Builder{}
 
@@ -285,10 +307,12 @@ func fakePath(mf model.MediaFile) string {
 	return builder.String()
 }
 
+// sanitizeSlashes 把名称中的斜杠替换掉，避免破坏虚拟路径的层级结构。
 func sanitizeSlashes(target string) string {
 	return strings.ReplaceAll(target, "/", "_")
 }
 
+// childFromAlbum 把专辑转换为 Child 结构（在目录浏览中专辑表现为一个「目录」）。
 func childFromAlbum(ctx context.Context, al model.Album) responses.Child {
 	child := responses.Child{}
 	child.Id = al.ID
@@ -314,6 +338,7 @@ func childFromAlbum(ctx context.Context, al model.Album) responses.Child {
 	return child
 }
 
+// osChildFromAlbum 构造 OpenSubsonic 扩展的专辑字段，老客户端同样跳过。
 func osChildFromAlbum(ctx context.Context, al model.Album) *responses.OpenSubsonicChild {
 	player, _ := request.PlayerFrom(ctx)
 	if strings.Contains(conf.Server.Subsonic.LegacyClients, player.Client) {
@@ -337,6 +362,7 @@ func osChildFromAlbum(ctx context.Context, al model.Album) *responses.OpenSubson
 }
 
 // toItemDate converts a string date in the formats 'YYYY-MM-DD', 'YYYY-MM' or 'YYYY' to an OS ItemDate
+// toItemDate 解析部分精度的日期：标签中的日期常只有年或年月，需分段处理。
 func toItemDate(date string) responses.ItemDate {
 	itemDate := responses.ItemDate{}
 	if date == "" {
@@ -354,6 +380,8 @@ func toItemDate(date string) responses.ItemDate {
 	return itemDate
 }
 
+// buildDiscSubtitles 构造碟片副标题列表并按碟号排序。
+// 只有单碟且无标题时视为无意义，返回空。
 func buildDiscSubtitles(a model.Album) []responses.DiscTitle {
 	if len(a.Discs) == 0 {
 		return nil
@@ -371,6 +399,7 @@ func buildDiscSubtitles(a model.Album) []responses.DiscTitle {
 	return discTitles
 }
 
+// buildAlbumID3 转换为 ID3 风格的专辑响应结构。
 func buildAlbumID3(ctx context.Context, album model.Album) responses.AlbumID3 {
 	dir := responses.AlbumID3{}
 	dir.Id = album.ID
@@ -393,6 +422,7 @@ func buildAlbumID3(ctx context.Context, album model.Album) responses.AlbumID3 {
 	return dir
 }
 
+// buildOSAlbumID3 构造 OpenSubsonic 扩展的专辑 ID3 字段，老客户端跳过。
 func buildOSAlbumID3(ctx context.Context, album model.Album) *responses.OpenSubsonicAlbumID3 {
 	player, _ := request.PlayerFrom(ctx)
 	if strings.Contains(conf.Server.Subsonic.LegacyClients, player.Client) {
@@ -425,6 +455,7 @@ func buildOSAlbumID3(ctx context.Context, album model.Album) *responses.OpenSubs
 	return &dir
 }
 
+// mapExplicitStatus 把内部的单字母标记转换为 OpenSubsonic 规定的字面量。
 func mapExplicitStatus(explicitStatus string) string {
 	switch explicitStatus {
 	case "c":
@@ -435,6 +466,7 @@ func mapExplicitStatus(explicitStatus string) string {
 	return ""
 }
 
+// buildStructuredLyric 构造结构化歌词。歌词自身未带艺人/标题时回退用曲目信息填充。
 func buildStructuredLyric(mf *model.MediaFile, lyrics model.Lyrics) responses.StructuredLyric {
 	lines := make([]responses.Line, len(lyrics.Line))
 
@@ -464,6 +496,7 @@ func buildStructuredLyric(mf *model.MediaFile, lyrics model.Lyrics) responses.St
 	return structured
 }
 
+// buildLyricsList 构造歌词列表响应。
 func buildLyricsList(mf *model.MediaFile, lyricsList model.LyricList) *responses.LyricsList {
 	lyricList := make(responses.StructuredLyrics, len(lyricsList))
 
@@ -478,6 +511,7 @@ func buildLyricsList(mf *model.MediaFile, lyricsList model.LyricList) *responses
 }
 
 // getUserAccessibleLibraries returns the list of libraries the current user has access to.
+// getUserAccessibleLibraries 返回当前用户可访问的音乐库。
 func getUserAccessibleLibraries(ctx context.Context) []model.Library {
 	user := getUser(ctx)
 	return user.Libraries
@@ -487,6 +521,10 @@ func getUserAccessibleLibraries(ctx context.Context) []model.Library {
 // If no IDs are provided, it returns all libraries the user has access to (based on the user found in the context).
 // If the parameter is required and not present, it returns an error.
 // If any of the provided library IDs are invalid (don't exist or user doesn't have access), returns ErrorDataNotFound.
+//
+// selectedMusicFolderIds 解析请求中的音乐库 ID。
+// 逐个校验访问权限，任一不可访问即整体报错，防止越权读取其他库的内容。
+// 未指定时默认为用户全部可访问的库。
 func selectedMusicFolderIds(r *http.Request, required bool) ([]int, error) {
 	p := req.Params(r)
 	musicFolderIds, err := p.Ints("musicFolderId")

@@ -14,6 +14,10 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// handleShares 渲染分享页。
+//
+// 该路由同时承担静态资源兜底：路径若能匹配到前端资源就直接返回文件，
+// 否则才当作分享 ID 处理。
 func (pub *Router) handleShares(w http.ResponseWriter, r *http.Request) {
 	id, err := req.Params(r).String(":id")
 	if err != nil {
@@ -39,6 +43,7 @@ func (pub *Router) handleShares(w http.ResponseWriter, r *http.Request) {
 	server.IndexWithShare(pub.ds, ui.BuildAssets(), s)(w, r)
 }
 
+// handleM3U 以 M3U 播放列表形式输出分享内容，便于外部播放器直接打开。
 func (pub *Router) handleM3U(w http.ResponseWriter, r *http.Request) {
 	id, err := req.Params(r).String(":id")
 	if err != nil {
@@ -59,6 +64,8 @@ func (pub *Router) handleM3U(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(s.ToM3U8()))
 }
 
+// checkShareError 把分享相关错误映射为合适的 HTTP 状态：
+// 过期用 410（资源曾存在），未找到 404，不可下载 403。
 func checkShareError(ctx context.Context, w http.ResponseWriter, err error, id string) {
 	switch {
 	case errors.Is(err, model.ErrExpired):
@@ -76,6 +83,8 @@ func checkShareError(ctx context.Context, w http.ResponseWriter, err error, id s
 	}
 }
 
+// mapShareInfo 补全分享的对外链接与封面地址，
+// 并把曲目 ID 换成签名令牌，避免暴露内部 ID。
 func (pub *Router) mapShareInfo(r *http.Request, s model.Share) *model.Share {
 	s.URL = ShareURL(r, s.ID)
 	s.ImageURL = ImageURL(r, s.CoverArtID(), consts.UICoverArtSize)
@@ -85,6 +94,7 @@ func (pub *Router) mapShareInfo(r *http.Request, s model.Share) *model.Share {
 	return &s
 }
 
+// mapShareToM3U 把曲目路径替换为公开播放地址，供 M3U 使用。
 func (pub *Router) mapShareToM3U(r *http.Request, s model.Share) *model.Share {
 	for i := range s.Tracks {
 		id := encodeMediafileShare(s, s.Tracks[i].ID)

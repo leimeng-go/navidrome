@@ -12,6 +12,8 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// doInspect 读取并解析指定媒体文件的原始标签。
+// 文件已标记缺失时直接返回未找到——磁盘上已无此文件，无从解析。
 func doInspect(ctx context.Context, ds model.DataStore, id string) (*core.InspectOutput, error) {
 	file, err := ds.MediaFile(ctx).Get(id)
 	if err != nil {
@@ -25,6 +27,8 @@ func doInspect(ctx context.Context, ds model.DataStore, id string) (*core.Inspec
 	return core.Inspect(file.AbsolutePath(), file.LibraryID, file.FolderID)
 }
 
+// inspect 返回媒体文件的原始标签信息，用于排查元数据问题。
+// 响应中剔除 MappedTags：前端只需原始标签，映射结果由服务端内部使用。
 func inspect(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

@@ -19,6 +19,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// searchParams 汇总三类实体各自的分页参数。
 type searchParams struct {
 	query        string
 	artistCount  int
@@ -29,6 +30,8 @@ type searchParams struct {
 	songOffset   int
 }
 
+// getSearchParams 解析搜索参数。
+// query 缺省为一对引号，表示「匹配全部」，这是 Subsonic 客户端惯用的取全量写法。
 func (api *Router) getSearchParams(r *http.Request) (*searchParams, error) {
 	p := req.Params(r)
 	sp := &searchParams{}
@@ -42,8 +45,11 @@ func (api *Router) getSearchParams(r *http.Request) (*searchParams, error) {
 	return sp, nil
 }
 
+// searchFunc 抽象各仓库的搜索方法签名，便于泛型复用。
 type searchFunc[T any] func(q string, offset int, size int, options ...model.QueryOptions) (T, error)
 
+// callSearch 把一次搜索包装成可并行执行的任务。
+// 单类搜索失败不向上返回错误，避免一类结果出错就让整个搜索失败。
 func callSearch[T any](ctx context.Context, s searchFunc[T], q string, offset, size int, result *T, options ...model.QueryOptions) func() error {
 	return func() error {
 		if size == 0 {
@@ -62,6 +68,10 @@ func callSearch[T any](ctx context.Context, s searchFunc[T], q string, offset, s
 	}
 }
 
+// searchAll 并行搜索曲目、专辑与艺人。
+//
+// 查询串先去掉尾部通配符再转小写并去重音，与索引侧的规范化方式保持一致。
+// 艺人的库过滤需走 library_artist 关联表，与专辑/曲目的直接 library_id 过滤不同。
 func (api *Router) searchAll(ctx context.Context, sp *searchParams, musicFolderIds []int) (mediaFiles model.MediaFiles, albums model.Albums, artists model.Artists) {
 	start := time.Now()
 	q := sanitize.Accents(strings.ToLower(strings.TrimSuffix(sp.query, "*")))
@@ -97,6 +107,7 @@ func (api *Router) searchAll(ctx context.Context, sp *searchParams, musicFolderI
 	return mediaFiles, albums, artists
 }
 
+// Search2 搜索（旧版结构）。
 func (api *Router) Search2(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	sp, err := api.getSearchParams(r)
@@ -132,6 +143,7 @@ func (api *Router) Search2(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// Search3 搜索（ID3 结构）。
 func (api *Router) Search3(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	sp, err := api.getSearchParams(r)

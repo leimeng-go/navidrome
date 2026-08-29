@@ -17,6 +17,7 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// GetMusicFolders 返回当前用户可访问的音乐库列表。
 func (api *Router) GetMusicFolders(r *http.Request) (*responses.Subsonic, error) {
 	libraries := getUserAccessibleLibraries(r.Context())
 
@@ -30,6 +31,9 @@ func (api *Router) GetMusicFolders(r *http.Request) (*responses.Subsonic, error)
 	return response, nil
 }
 
+// getArtist 获取艺人索引及其最后修改时间。
+// 客户端可用 ifModifiedSince 做增量拉取：上次扫描早于该时间则返回空索引，
+// 让客户端沿用本地缓存。
 func (api *Router) getArtist(r *http.Request, libIds []int, ifModifiedSince time.Time) (model.ArtistIndexes, int64, error) {
 	ctx := r.Context()
 
@@ -59,6 +63,7 @@ func (api *Router) getArtist(r *http.Request, libIds []int, ifModifiedSince time
 	return indexes, lastScan.UnixMilli(), err
 }
 
+// getArtistIndex 构造旧版索引响应。
 func (api *Router) getArtistIndex(r *http.Request, libIds []int, ifModifiedSince time.Time) (*responses.Indexes, error) {
 	indexes, modified, err := api.getArtist(r, libIds, ifModifiedSince)
 	if err != nil {
@@ -78,6 +83,7 @@ func (api *Router) getArtistIndex(r *http.Request, libIds []int, ifModifiedSince
 	return res, nil
 }
 
+// getArtistIndexID3 构造 ID3 风格的索引响应。
 func (api *Router) getArtistIndexID3(r *http.Request, libIds []int, ifModifiedSince time.Time) (*responses.Artists, error) {
 	indexes, modified, err := api.getArtist(r, libIds, ifModifiedSince)
 	if err != nil {
@@ -97,6 +103,7 @@ func (api *Router) getArtistIndexID3(r *http.Request, libIds []int, ifModifiedSi
 	return res, nil
 }
 
+// GetIndexes 返回按首字母分组的艺人索引（旧版目录浏览）。
 func (api *Router) GetIndexes(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	musicFolderIds, _ := selectedMusicFolderIds(r, false)
@@ -112,6 +119,7 @@ func (api *Router) GetIndexes(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// GetArtists 返回按首字母分组的艺人索引（ID3 浏览）。
 func (api *Router) GetArtists(r *http.Request) (*responses.Subsonic, error) {
 	musicFolderIds, _ := selectedMusicFolderIds(r, false)
 
@@ -125,6 +133,8 @@ func (api *Router) GetArtists(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// GetMusicDirectory 返回目录内容。
+// 目录在 Navidrome 中并非真实文件夹：艺人展开为专辑列表，专辑展开为曲目列表。
 func (api *Router) GetMusicDirectory(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, _ := p.String("id")
@@ -162,6 +172,7 @@ func (api *Router) GetMusicDirectory(r *http.Request) (*responses.Subsonic, erro
 	return response, nil
 }
 
+// GetArtist 返回艺人及其专辑列表。
 func (api *Router) GetArtist(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, _ := p.String("id")
@@ -185,6 +196,7 @@ func (api *Router) GetArtist(r *http.Request) (*responses.Subsonic, error) {
 	return response, err
 }
 
+// GetAlbum 返回专辑及其曲目列表。
 func (api *Router) GetAlbum(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, _ := p.String("id")
@@ -212,6 +224,7 @@ func (api *Router) GetAlbum(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// GetAlbumInfo 返回专辑的外部元数据（简介、图片、外链）。
 func (api *Router) GetAlbumInfo(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, err := p.String("id")
@@ -240,6 +253,7 @@ func (api *Router) GetAlbumInfo(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// GetSong 返回单首曲目信息。
 func (api *Router) GetSong(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, _ := p.String("id")
@@ -261,6 +275,8 @@ func (api *Router) GetSong(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// GetGenres 返回风格列表。
+// 空风格名替换为占位文本，否则客户端会显示成无法点击的空条目。
 func (api *Router) GetGenres(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	genres, err := api.ds.Genre(ctx).GetAll(model.QueryOptions{Sort: "song_count, album_count, name desc", Order: "desc"})
@@ -279,6 +295,7 @@ func (api *Router) GetGenres(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// getArtistInfo 拉取艺人的外部元数据与相似艺人。
 func (api *Router) getArtistInfo(r *http.Request) (*responses.ArtistInfoBase, *model.Artists, error) {
 	ctx := r.Context()
 	p := req.Params(r)
@@ -305,6 +322,8 @@ func (api *Router) getArtistInfo(r *http.Request) (*responses.ArtistInfoBase, *m
 	return &base, &artist.SimilarArtists, nil
 }
 
+// GetArtistInfo 返回艺人信息（旧版结构）。
+// 相似艺人若本地库中不存在则以 -1 作为 ID，表示不可跳转。
 func (api *Router) GetArtistInfo(r *http.Request) (*responses.Subsonic, error) {
 	base, similarArtists, err := api.getArtistInfo(r)
 	if err != nil {
@@ -325,6 +344,7 @@ func (api *Router) GetArtistInfo(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// GetArtistInfo2 返回艺人信息（ID3 结构）。
 func (api *Router) GetArtistInfo2(r *http.Request) (*responses.Subsonic, error) {
 	base, similarArtists, err := api.getArtistInfo(r)
 	if err != nil {
@@ -345,6 +365,7 @@ func (api *Router) GetArtistInfo2(r *http.Request) (*responses.Subsonic, error) 
 	return response, nil
 }
 
+// GetSimilarSongs 基于艺人电台返回相似曲目。
 func (api *Router) GetSimilarSongs(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	p := req.Params(r)
@@ -366,6 +387,7 @@ func (api *Router) GetSimilarSongs(r *http.Request) (*responses.Subsonic, error)
 	return response, nil
 }
 
+// GetSimilarSongs2 与 GetSimilarSongs 内容相同，仅响应字段名不同。
 func (api *Router) GetSimilarSongs2(r *http.Request) (*responses.Subsonic, error) {
 	res, err := api.GetSimilarSongs(r)
 	if err != nil {
@@ -379,6 +401,8 @@ func (api *Router) GetSimilarSongs2(r *http.Request) (*responses.Subsonic, error
 	return response, nil
 }
 
+// GetTopSongs 返回艺人热门曲目。
+// 未找到不视为错误：外部服务无数据时返回空列表即可。
 func (api *Router) GetTopSongs(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	p := req.Params(r)
@@ -400,6 +424,7 @@ func (api *Router) GetTopSongs(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// buildArtistDirectory 把艺人构造成目录，子项为其专辑。
 func (api *Router) buildArtistDirectory(ctx context.Context, artist *model.Artist) (*responses.Directory, error) {
 	dir := &responses.Directory{}
 	dir.Id = artist.ID
@@ -423,6 +448,7 @@ func (api *Router) buildArtistDirectory(ctx context.Context, artist *model.Artis
 	return dir, nil
 }
 
+// buildArtist 构造带专辑列表的艺人响应。
 func (api *Router) buildArtist(r *http.Request, artist *model.Artist) (*responses.ArtistWithAlbumsID3, error) {
 	ctx := r.Context()
 	a := &responses.ArtistWithAlbumsID3{}
@@ -437,6 +463,7 @@ func (api *Router) buildArtist(r *http.Request, artist *model.Artist) (*response
 	return a, nil
 }
 
+// buildAlbumDirectory 把专辑构造成目录，子项为其曲目。
 func (api *Router) buildAlbumDirectory(ctx context.Context, album *model.Album) (*responses.Directory, error) {
 	dir := &responses.Directory{}
 	dir.Id = album.ID
@@ -462,6 +489,7 @@ func (api *Router) buildAlbumDirectory(ctx context.Context, album *model.Album) 
 	return dir, nil
 }
 
+// buildAlbum 构造带曲目列表的专辑响应。
 func (api *Router) buildAlbum(ctx context.Context, album *model.Album, mfs model.MediaFiles) *responses.AlbumWithSongsID3 {
 	dir := &responses.AlbumWithSongsID3{}
 	dir.AlbumID3 = buildAlbumID3(ctx, *album)

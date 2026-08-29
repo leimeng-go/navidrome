@@ -28,11 +28,15 @@ const (
 	imageRequestTimeout = 5 * time.Second
 )
 
+// Handler 提供登录页随机背景图。
+// 图片列表与图片本体分别缓存：前者走 HTTP 缓存，后者落磁盘。
 type Handler struct {
 	httpClient *cache.HTTPClient
 	cache      cache.FileCache
 }
 
+// NewHandler 创建处理器，并在后台预热图片列表，
+// 避免首个访问登录页的用户额外等待一次远程请求。
 func NewHandler() *Handler {
 	h := &Handler{}
 	h.httpClient = cache.NewHTTPClient(&http.Client{Timeout: 5 * time.Second}, imageListTTL)
@@ -43,12 +47,15 @@ func NewHandler() *Handler {
 	return h
 }
 
+// cacheKey 用图片名作为文件缓存的键。
 type cacheKey string
 
 func (k cacheKey) Key() string {
 	return string(k)
 }
 
+// ServeHTTP 返回一张随机背景图。任何环节失败都退回内置的离线图片，
+// 保证登录页在无外网时仍然可用。
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	image, err := h.getRandomImage(r.Context())
 	if err != nil {
@@ -66,12 +73,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, s.Reader)
 }
 
+// serveDefaultImage 输出内置的离线背景图。
 func (h *Handler) serveDefaultImage(w http.ResponseWriter) {
 	defaultImage, _ := base64.StdEncoding.DecodeString(consts.DefaultUILoginBackgroundOffline)
 	w.Header().Set("content-type", "image/png")
 	_, _ = w.Write(defaultImage)
 }
 
+// serveImage 从图床拉取图片，作为文件缓存的回源函数。
+// 超时时返回内置图片而非报错，避免登录页长时间空白。
 func (h *Handler) serveImage(ctx context.Context, item cache.Item) (io.Reader, error) {
 	start := time.Now()
 	image := item.Key()
@@ -96,6 +106,7 @@ func (h *Handler) serveImage(ctx context.Context, item cache.Item) (io.Reader, e
 	return resp.Body, nil
 }
 
+// getRandomImage 从列表中随机选一张。
 func (h *Handler) getRandomImage(ctx context.Context) (string, error) {
 	list, err := h.getImageList(ctx)
 	if err != nil {
@@ -108,6 +119,7 @@ func (h *Handler) getRandomImage(ctx context.Context) (string, error) {
 	return list[rnd], nil
 }
 
+// getImageList 拉取可用图片清单（YAML），结果按 TTL 缓存一天。
 func (h *Handler) getImageList(ctx context.Context) ([]string, error) {
 	start := time.Now()
 
@@ -130,6 +142,7 @@ func (h *Handler) getImageList(ctx context.Context) ([]string, error) {
 	return list, nil
 }
 
+// imageURL 拼接图片地址。列表中的名字可能带扩展名，需先去掉再套用模板。
 func imageURL(imageName string) string {
 	// Discard extension
 	parts := strings.Split(imageName, ".")

@@ -12,6 +12,7 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// Jukebox 支持的控制动作。
 const (
 	ActionGet     = "get"
 	ActionStatus  = "status"
@@ -26,6 +27,11 @@ const (
 	ActionSetGain = "setGain"
 )
 
+// JukeboxControl 控制服务端本地播放（Jukebox）。
+//
+// 该功能让服务器直接驱动本机声卡，属于高权限操作，
+// 故需显式启用，并可配置为仅管理员可用。
+// 每个用户对应一个独立设备，动作通过 action 参数分发。
 func (api *Router) JukeboxControl(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	user := getUser(ctx)
@@ -120,12 +126,14 @@ func createResponse(status playback.DeviceStatus, err error) (*responses.Subsoni
 	return statusResponse(status), nil
 }
 
+// statusResponse 构造仅含状态的响应。
 func statusResponse(status playback.DeviceStatus) *responses.Subsonic {
 	response := newResponse()
 	response.JukeboxStatus = deviceStatusToJukeboxStatus(status)
 	return response
 }
 
+// deviceStatusToJukeboxStatus 转换播放设备状态为协议结构。
 func deviceStatusToJukeboxStatus(status playback.DeviceStatus) *responses.JukeboxStatus {
 	return &responses.JukeboxStatus{
 		CurrentIndex: int32(status.CurrentIndex),

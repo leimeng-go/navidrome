@@ -22,6 +22,7 @@ func (api *Router) addUserLibraryRoute(r chi.Router) {
 }
 
 // Middleware to parse user ID from URL
+// parseUserIDMiddleware 从路径中取出用户 ID 并放入上下文。
 func parseUserIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userID := chi.URLParam(r, "id")
@@ -36,6 +37,7 @@ func parseUserIDMiddleware(next http.Handler) http.Handler {
 
 // User-library association handlers
 
+// getUserLibraries 返回用户可访问的音乐库列表。
 func getUserLibraries(service core.Library) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Context().Value("userID").(string)
@@ -58,6 +60,8 @@ func getUserLibraries(service core.Library) http.HandlerFunc {
 	}
 }
 
+// setUserLibraries 设置用户可访问的音乐库，并回写更新后的列表，
+// 让前端无需再发一次请求即可刷新界面。
 func setUserLibraries(service core.Library) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Context().Value("userID").(string)

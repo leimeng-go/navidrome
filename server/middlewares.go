@@ -24,6 +24,9 @@ import (
 	"github.com/unrolled/secure"
 )
 
+// requestLogger 记录每个请求的方法、地址、耗时与状态。
+// 日志级别随状态码分档：5xx 记 Error、4xx 记 Warn、其余记 Debug，
+// 避免正常流量淹没错误信息。Trace 级别才输出完整请求头。
 func requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		scheme := "http"
@@ -63,6 +66,7 @@ func requestLogger(next http.Handler) http.Handler {
 	})
 }
 
+// loggerInjector 把 requestId 注入日志上下文，使同一请求的日志可串联。
 func loggerInjector(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -71,6 +75,8 @@ func loggerInjector(next http.Handler) http.Handler {
 	})
 }
 
+// robotsTXT 拦截任意路径下的 /robots.txt 请求，统一返回内嵌的那一份。
+// BasePath 可能带前缀，故按后缀匹配。
 func robotsTXT(fs fs.FS) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +90,9 @@ func robotsTXT(fs fs.FS) func(http.Handler) http.Handler {
 	}
 }
 
+// corsHandler 配置跨域策略。
+// 不允许携带凭据，因此可安全放开任意来源；
+// 额外暴露几个自定义响应头供前端读取。
 func corsHandler() func(http.Handler) http.Handler {
 	return cors.Handler(cors.Options{
 		AllowedOrigins: []string{"*"},
@@ -101,6 +110,7 @@ func corsHandler() func(http.Handler) http.Handler {
 	})
 }
 
+// secureMiddleware 设置安全响应头：禁止 MIME 嗅探、禁止被嵌入 iframe、限制 Referer 与敏感权限。
 func secureMiddleware() func(http.Handler) http.Handler {
 	sec := secure.New(secure.Options{
 		ContentTypeNosniff:      true,
@@ -113,6 +123,7 @@ func secureMiddleware() func(http.Handler) http.Handler {
 	return sec.Handler
 }
 
+// compressMiddleware 对文本类响应启用压缩。
 func compressMiddleware() func(http.Handler) http.Handler {
 	return middleware.Compress(
 		5,
@@ -129,6 +140,10 @@ func compressMiddleware() func(http.Handler) http.Handler {
 
 // clientUniqueIDMiddleware is a middleware that sets a unique client ID as a cookie if it's provided in the request header.
 // If the unique client ID is not in the header but present as a cookie, it adds the ID to the request context.
+//
+// clientUniqueIDMiddleware 维护客户端唯一标识。
+// 请求头带了就写入 Cookie 持久化，没带就从 Cookie 回读，
+// 使同一浏览器在多次会话间保持同一个播放器标识。
 func clientUniqueIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -167,6 +182,10 @@ func clientUniqueIDMiddleware(next http.Handler) http.Handler {
 
 // realIPMiddleware applies middleware.RealIP, and additionally saves the request's original RemoteAddr to the request's
 // context if navidrome is behind a trusted reverse proxy.
+//
+// realIPMiddleware 解析真实客户端 IP。
+// 配置了可信代理时，需在 RealIP 改写之前先把原始 RemoteAddr 存入上下文——
+// 那才是代理自身的 IP，用于校验其是否可信。
 func realIPMiddleware(next http.Handler) http.Handler {
 	if conf.Server.ExtAuth.TrustedSources != "" {
 		return chi.Chain(
@@ -183,6 +202,8 @@ func realIPMiddleware(next http.Handler) http.Handler {
 
 // reqToCtx creates a middleware that updates the request's context with a value computed from the request. A given key
 // can only be set once.
+//
+// reqToCtx 把从请求算出的值写入上下文。同一 key 只写一次，防止被后续中间件覆盖。
 func reqToCtx(key any, fn func(req *http.Request) any) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -199,6 +220,9 @@ func reqToCtx(key any, fn func(req *http.Request) any) func(http.Handler) http.H
 // serverAddressMiddleware is a middleware function that modifies the request object
 // to reflect the address of the server handling the request, as determined by the
 // presence of X-Forwarded-* headers or the scheme and host of the request URL.
+//
+// serverAddressMiddleware 依据 X-Forwarded-* 头还原对外可见的 scheme 与 host，
+// 使生成的链接（如分享地址）在反向代理后仍然正确。
 func serverAddressMiddleware(h http.Handler) http.Handler {
 	// Define a new handler function that will be returned by this middleware function.
 	fn := func(w http.ResponseWriter, r *http.Request) {
@@ -228,6 +252,9 @@ var (
 // serverAddress is a helper function that returns the scheme and host of the server
 // handling the given request, as determined by the presence of X-Forwarded-* headers
 // or the scheme and host of the request URL.
+//
+// serverAddress 计算对外的 scheme 与 host。
+// X-Forwarded-Host 在多级代理下可能是逗号分隔的列表，取第一个（最靠近客户端的那个）。
 func serverAddress(r *http.Request) (scheme, host string) {
 	// Save the original request host for later comparison.
 	origHost := r.Host
@@ -273,6 +300,10 @@ func serverAddress(r *http.Request) (scheme, host string) {
 // URLParamsMiddleware is a middleware function that decodes the query string of
 // the incoming HTTP request, adds the URL parameters from the routing context,
 // and re-encodes the modified query string.
+//
+// URLParamsMiddleware 把 chi 的路径参数以 ":name" 形式并入查询串，
+// 让下游处理器可以统一从查询参数读取，无需区分参数来自路径还是查询串。
+// 通配符参数跳过。
 func URLParamsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Retrieve the routing context from the request context.
@@ -301,6 +332,10 @@ func URLParamsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// UpdateLastAccessMiddleware 更新用户的最近访问时间。
+//
+// 用限流器按用户降频，避免每个请求都写库。
+// 写操作限时 1 秒且失败只告警：该字段并非关键数据，不应拖慢或中断请求。
 func UpdateLastAccessMiddleware(ds model.DataStore) func(next http.Handler) http.Handler {
 	userAccessLimiter := utils.Limiter{Interval: consts.UpdateLastAccessFrequency}
 	return func(next http.Handler) http.Handler {

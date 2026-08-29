@@ -13,6 +13,7 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// GetScanStatus 返回扫描进度。
 func (api *Router) GetScanStatus(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	status, err := api.scanner.Status(ctx)
@@ -33,6 +34,12 @@ func (api *Router) GetScanStatus(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// StartScan 触发一次按需扫描，仅管理员可用。
+//
+// target 参数可指定只扫描某些库或子目录；
+// 每个目标都要校验用户是否有权访问，防止探测未授权的库。
+// 单库部署下的空路径目标等价于全量扫描，直接走 ScanAll 更省事。
+// 扫描在后台 goroutine 中执行，立即返回当前状态，避免长时间占用连接。
 func (api *Router) StartScan(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	loggedUser, ok := request.UserFrom(ctx)

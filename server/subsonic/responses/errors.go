@@ -1,5 +1,6 @@
 package responses
 
+// Subsonic 协议定义的错误码。
 const (
 	ErrorGeneric            int32 = 0
 	ErrorMissingParameter   int32 = 10
@@ -11,6 +12,7 @@ const (
 	ErrorDataNotFound       int32 = 70
 )
 
+// errors 是错误码对应的标准提示文案。
 var errors = map[int32]string{
 	ErrorGeneric:            "A generic error",
 	ErrorMissingParameter:   "Required parameter is missing",
@@ -22,6 +24,7 @@ var errors = map[int32]string{
 	ErrorDataNotFound:       "The requested data was not found",
 }
 
+// ErrorMsg 返回错误码对应的提示，未知码退回通用错误。
 func ErrorMsg(code int32) string {
 	if v, found := errors[code]; found {
 		return v

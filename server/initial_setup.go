@@ -14,6 +14,9 @@ import (
 	"github.com/navidrome/navidrome/model/id"
 )
 
+// initialSetup 执行首次启动初始化。
+// 整个过程放在一个事务里，避免中途失败留下半初始化状态。
+// 通过属性表中的标志位保证只执行一次；音乐库目录则每次启动都同步。
 func initialSetup(ds model.DataStore) {
 	ctx := context.TODO()
 	_ = ds.WithTx(func(tx model.DataStore) error {
@@ -39,6 +42,9 @@ func initialSetup(ds model.DataStore) {
 }
 
 // If the Dev Admin user is not present, create it
+// createInitialAdminUser 创建开发用管理员账号。
+// 仅在配置了 DevAutoCreateAdminPassword 时触发，密码会明文写进日志，
+// 因此只可用于开发环境。
 func createInitialAdminUser(ds model.DataStore, initialPassword string) error {
 	users := ds.User(context.TODO())
 	c, err := users.CountAll(model.QueryOptions{Filters: squirrel.Eq{"user_name": consts.DevInitialUserName}})
@@ -65,6 +71,9 @@ func createInitialAdminUser(ds model.DataStore, initialPassword string) error {
 	return err
 }
 
+// checkFFmpegInstallation 检查 ffmpeg 是否可用。
+// 缺失时不阻断启动（转码功能才需要），但若元数据提取器配的是 ffmpeg，
+// 则必须回退到 taglib，否则扫描将完全失效。
 func checkFFmpegInstallation() {
 	f := ffmpeg.New()
 	_, err := f.CmdPath()
@@ -78,6 +87,7 @@ func checkFFmpegInstallation() {
 	}
 }
 
+// checkExternalCredentials 在启动时输出各外部服务的启用状态，便于排查配置遗漏。
 func checkExternalCredentials() {
 	if conf.Server.EnableExternalServices {
 		if !conf.Server.LastFM.Enabled {

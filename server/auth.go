@@ -33,6 +33,7 @@ var (
 	ErrUnauthenticated = errors.New("request not authenticated")
 )
 
+// login 返回登录接口处理器。
 func login(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		username, password, err := getCredentialsFromBody(r)
@@ -46,6 +47,8 @@ func login(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// doLogin 执行登录：校验凭据、签发 JWT，并返回用户信息负载。
+// 校验出错与凭据不符区别对待：前者是服务端异常，后者统一回 401 且不透露具体原因。
 func doLogin(ds model.DataStore, username string, password string, w http.ResponseWriter, r *http.Request) {
 	user, err := validateLogin(ds.User(r.Context()), username, password)
 	if err != nil {
@@ -68,6 +71,11 @@ func doLogin(ds model.DataStore, username string, password string, w http.Respon
 	_ = rest.RespondWithJSON(w, http.StatusOK, payload)
 }
 
+// buildAuthPayload 构造返回给前端的用户负载。
+//
+// 额外附带 subsonicSalt/subsonicToken：前端需要它们去调用 Subsonic API，
+// 这样密码本身无需在前端保存。salt 随机生成，token 为 md5(密码+salt)。
+// 随机数生成失败时降级返回不含 Subsonic 凭据的负载，不阻断登录。
 func buildAuthPayload(user *model.User) map[string]interface{} {
 	payload := map[string]interface{}{
 		"id":       user.ID,
@@ -94,6 +102,7 @@ func buildAuthPayload(user *model.User) map[string]interface{} {
 	return payload
 }
 
+// getCredentialsFromBody 从请求体 JSON 中解析用户名与密码。
 func getCredentialsFromBody(r *http.Request) (username string, password string, err error) {
 	data := make(map[string]string)
 	decoder := json.NewDecoder(r.Body)
@@ -107,6 +116,8 @@ func getCredentialsFromBody(r *http.Request) (username string, password string, 
 	return username, password, nil
 }
 
+// createAdmin 返回创建首个管理员的处理器。
+// 已存在任何用户时拒绝，防止该接口被用来越权创建管理员。
 func createAdmin(ds model.DataStore) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		username, password, err := getCredentialsFromBody(r)
@@ -133,6 +144,7 @@ func createAdmin(ds model.DataStore) func(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// createAdminUser 创建首个管理员用户。
 func createAdminUser(ctx context.Context, ds model.DataStore, username, password string) error {
 	log.Warn(ctx, "Creating initial user", "user", username)
 	now := time.Now()
@@ -153,6 +165,8 @@ func createAdminUser(ctx context.Context, ds model.DataStore, username, password
 	return nil
 }
 
+// validateLogin 校验用户名密码。
+// 用户不存在与密码错误都返回 (nil, nil)，由调用方统一回相同的错误，避免用户名枚举。
 func validateLogin(userRepo model.UserRepository, userName, password string) (*model.User, error) {
 	u, err := userRepo.FindByUsernameWithPassword(userName)
 	if errors.Is(err, model.ErrNotFound) {
@@ -171,10 +185,12 @@ func validateLogin(userRepo model.UserRepository, userName, password string) (*m
 	return u, nil
 }
 
+// JWTVerifier 从请求头、Cookie 或查询参数中提取并校验 JWT。
 func JWTVerifier(next http.Handler) http.Handler {
 	return jwtauth.Verify(auth.TokenAuth, tokenFromHeader, jwtauth.TokenFromCookie, jwtauth.TokenFromQuery)(next)
 }
 
+// tokenFromHeader 从自定义认证头中提取 Bearer 令牌。
 func tokenFromHeader(r *http.Request) string {
 	// Get token from authorization header.
 	bearer := r.Header.Get(consts.UIAuthorizationHeader)
@@ -184,6 +200,7 @@ func tokenFromHeader(r *http.Request) string {
 	return ""
 }
 
+// UsernameFromToken 从已校验的 JWT 中取出用户名。
 func UsernameFromToken(r *http.Request) string {
 	token, claims, err := jwtauth.FromContext(r.Context())
 	if err != nil || claims["sub"] == nil || token == nil {
@@ -193,6 +210,10 @@ func UsernameFromToken(r *http.Request) string {
 	return token.Subject()
 }
 
+// UsernameFromExtAuthHeader 从反向代理注入的请求头中取用户名。
+//
+// 该头部由代理设置，客户端可伪造，故必须先确认请求确实来自可信代理 IP，
+// 否则任何人都能凭一个请求头冒充任意用户。
 func UsernameFromExtAuthHeader(r *http.Request) string {
 	if conf.Server.ExtAuth.TrustedSources == "" {
 		return ""
@@ -214,6 +235,7 @@ func UsernameFromExtAuthHeader(r *http.Request) string {
 	return username
 }
 
+// InternalAuth 取内部调用（如插件）在上下文中标记的用户名。
 func InternalAuth(r *http.Request) string {
 	username, ok := request.InternalAuthFrom(r.Context())
 	if !ok {
@@ -223,10 +245,12 @@ func InternalAuth(r *http.Request) string {
 	return username
 }
 
+// UsernameFromConfig 返回开发用的自动登录用户名。
 func UsernameFromConfig(*http.Request) string {
 	return conf.Server.DevAutoLoginUsername
 }
 
+// contextWithUser 把用户信息注入上下文，供后续处理与日志使用。
 func contextWithUser(ctx context.Context, ds model.DataStore, username string) (context.Context, error) {
 	user, err := ds.User(ctx).FindByUsername(username)
 	if err == nil {
@@ -238,6 +262,7 @@ func contextWithUser(ctx context.Context, ds model.DataStore, username string) (
 	return ctx, err
 }
 
+// authenticateRequest 依次尝试各来源解析用户名，取第一个非空结果。
 func authenticateRequest(ds model.DataStore, r *http.Request, findUsernameFns ...func(r *http.Request) string) (context.Context, error) {
 	var username string
 	for _, fn := range findUsernameFns {
@@ -253,6 +278,8 @@ func authenticateRequest(ds model.DataStore, r *http.Request, findUsernameFns ..
 	return contextWithUser(r.Context(), ds, username)
 }
 
+// Authenticator 是认证中间件。
+// 来源优先级：开发自动登录 > JWT > 反向代理头。
 func Authenticator(ds model.DataStore) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -288,6 +315,11 @@ func JWTRefresher(next http.Handler) http.Handler {
 	})
 }
 
+// handleLoginFromHeaders 处理由请求头驱动的免密登录（反向代理或开发自动登录）。
+//
+// 用户不存在时自动创建，密码取随机值并加前缀标记为自动生成——
+// 身份由外部系统保证，本地密码不参与认证。
+// 首个被创建的用户自动成为管理员。
 func handleLoginFromHeaders(ds model.DataStore, r *http.Request) map[string]interface{} {
 	username := UsernameFromConfig(r)
 	if username == "" {
@@ -334,6 +366,10 @@ func handleLoginFromHeaders(ds model.DataStore, r *http.Request) map[string]inte
 	return buildAuthPayload(user)
 }
 
+// validateIPAgainstList 校验 IP 是否落在逗号分隔的 CIDR 白名单内。
+//
+// 两个特殊处理：Unix socket 场景下远端地址为 '@'（见 golang/go#49825），
+// 需白名单显式包含 '@'；带端口的地址先剥离端口再比较。
 func validateIPAgainstList(ip string, comaSeparatedList string) bool {
 	if comaSeparatedList == "" || ip == "" {
 		return false

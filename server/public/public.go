@@ -17,6 +17,7 @@ import (
 	"github.com/navidrome/navidrome/ui"
 )
 
+// Router 提供无需登录即可访问的公开端点：分享页、公开图片与流媒体。
 type Router struct {
 	http.Handler
 	artwork       artwork.Artwork
@@ -27,6 +28,7 @@ type Router struct {
 	ds            model.DataStore
 }
 
+// New 创建公开路由。
 func New(ds model.DataStore, artwork artwork.Artwork, streamer core.MediaStreamer, share core.Share, archiver core.Archiver) *Router {
 	p := &Router{ds: ds, artwork: artwork, streamer: streamer, share: share, archiver: archiver}
 	shareRoot := path.Join(conf.Server.BasePath, consts.URLPathPublic)
@@ -36,6 +38,10 @@ func New(ds model.DataStore, artwork artwork.Artwork, streamer core.MediaStreame
 	return p
 }
 
+// routes 注册公开路由。
+//
+// 图片端点可选限流：公开访问不受认证保护，需防止被刷爆导致封面生成压垮服务。
+// 分享相关端点整体受 EnableSharing 开关控制，下载再叠一层 EnableDownloads。
 func (pub *Router) routes() http.Handler {
 	r := chi.NewRouter()
 
@@ -65,11 +71,15 @@ func (pub *Router) routes() http.Handler {
 	return r
 }
 
+// ShareURL 生成分享链接。
 func ShareURL(r *http.Request, id string) string {
 	uri := path.Join(consts.URLPathPublic, id)
 	return publicURL(r, uri, nil)
 }
 
+// publicURL 生成对外可访问的链接。
+// 配置了 ShareURL 时用它的协议与主机名——分享链接常需走独立的公网域名，
+// 与内网访问地址不同。
 func publicURL(r *http.Request, u string, params url.Values) string {
 	if conf.Server.ShareURL != "" {
 		shareUrl, _ := url.Parse(conf.Server.ShareURL)

@@ -13,6 +13,7 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// GetShares 返回当前用户创建的分享列表。
 func (api *Router) GetShares(r *http.Request) (*responses.Subsonic, error) {
 	repo := api.share.NewRepository(r.Context()).(model.ShareRepository)
 	shares, err := repo.GetAll(model.QueryOptions{Sort: "created_at desc"})
@@ -28,6 +29,8 @@ func (api *Router) GetShares(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// buildShare 转换分享为响应结构。
+// 未填描述时用内容摘要兜底，避免客户端显示空白条目。
 func (api *Router) buildShare(r *http.Request, share model.Share) responses.Share {
 	resp := responses.Share{
 		ID:          share.ID,
@@ -50,6 +53,8 @@ func (api *Router) buildShare(r *http.Request, share model.Share) responses.Shar
 	return resp
 }
 
+// CreateShare 创建分享链接。多个资源 ID 以逗号拼接存储。
+// 保存后重新读取，以便返回补全了曲目列表的完整分享信息。
 func (api *Router) CreateShare(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	ids, err := p.Strings("id")
@@ -82,6 +87,7 @@ func (api *Router) CreateShare(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// UpdateShare 更新分享的描述与过期时间。
 func (api *Router) UpdateShare(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, err := p.String("id")
@@ -107,6 +113,7 @@ func (api *Router) UpdateShare(r *http.Request) (*responses.Subsonic, error) {
 	return newResponse(), nil
 }
 
+// DeleteShare 删除分享。
 func (api *Router) DeleteShare(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, err := p.String("id")

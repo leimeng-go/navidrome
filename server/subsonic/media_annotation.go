@@ -15,6 +15,7 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// SetRating 设置曲目、专辑或艺人的评分。
 func (api *Router) SetRating(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, err := p.String("id")
@@ -36,6 +37,7 @@ func (api *Router) SetRating(r *http.Request) (*responses.Subsonic, error) {
 	return newResponse(), nil
 }
 
+// setRating 依据 ID 对应的实体类型选择仓库写入评分，并广播刷新事件通知其他客户端。
 func (api *Router) setRating(ctx context.Context, id string, rating int) error {
 	var repo model.AnnotatedRepository
 	var resource string
@@ -64,6 +66,7 @@ func (api *Router) setRating(ctx context.Context, id string, rating int) error {
 	return nil
 }
 
+// Star 收藏条目。id/albumId/artistId 三个参数等价合并处理。
 func (api *Router) Star(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	ids, _ := p.Strings("id")
@@ -83,6 +86,7 @@ func (api *Router) Star(r *http.Request) (*responses.Subsonic, error) {
 	return newResponse(), nil
 }
 
+// Unstar 取消收藏。
 func (api *Router) Unstar(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	ids, _ := p.Strings("id")
@@ -102,6 +106,10 @@ func (api *Router) Unstar(r *http.Request) (*responses.Subsonic, error) {
 	return newResponse(), nil
 }
 
+// setStar 批量设置收藏状态。
+//
+// Subsonic 的 ID 不带类型信息，只能依次探测是专辑、艺人还是曲目。
+// 整批放在一个立即写事务中，保证要么全部生效要么全不生效。
 func (api *Router) setStar(ctx context.Context, star bool, ids ...string) error {
 	if len(ids) == 0 {
 		return nil
@@ -154,6 +162,11 @@ func (api *Router) setStar(ctx context.Context, star bool, ids ...string) error 
 	return nil
 }
 
+// Scrobble 上报播放。
+//
+// submission=true 表示播放完成需记录，false 表示仅更新「正在播放」。
+// 提供时间戳时数量必须与 ID 一一对应。
+// 上报失败只记日志仍返回成功：播放统计不应影响客户端播放体验。
 func (api *Router) Scrobble(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	ids, err := p.Strings("id")
@@ -183,6 +196,7 @@ func (api *Router) Scrobble(r *http.Request) (*responses.Subsonic, error) {
 	return newResponse(), nil
 }
 
+// scrobblerSubmit 提交播放记录，未给时间戳时以当前时间计。
 func (api *Router) scrobblerSubmit(ctx context.Context, ids []string, times []time.Time) error {
 	var submissions []scrobbler.Submission
 	log.Debug(ctx, "Scrobbling tracks", "ids", ids, "times", times)
@@ -199,6 +213,8 @@ func (api *Router) scrobblerSubmit(ctx context.Context, ids []string, times []ti
 	return api.scrobbler.Submit(ctx, submissions)
 }
 
+// scrobblerNowPlaying 更新「正在播放」状态。
+// 优先用客户端唯一 ID 标识来源，缺失时退回播放器 ID。
 func (api *Router) scrobblerNowPlaying(ctx context.Context, trackId string, position int) error {
 	mf, err := api.ds.MediaFile(ctx).Get(trackId)
 	if err != nil {

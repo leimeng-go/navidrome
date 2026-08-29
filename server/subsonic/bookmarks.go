@@ -12,6 +12,7 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// GetBookmarks 返回当前用户的所有书签（播放位置记忆）。
 func (api *Router) GetBookmarks(r *http.Request) (*responses.Subsonic, error) {
 	user, _ := request.UserFrom(r.Context())
 
@@ -36,6 +37,7 @@ func (api *Router) GetBookmarks(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// CreateBookmark 创建或更新曲目书签，position 为毫秒播放位置。
 func (api *Router) CreateBookmark(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, err := p.String("id")
@@ -54,6 +56,7 @@ func (api *Router) CreateBookmark(r *http.Request) (*responses.Subsonic, error) 
 	return newResponse(), nil
 }
 
+// DeleteBookmark 删除曲目书签。
 func (api *Router) DeleteBookmark(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, err := p.String("id")
@@ -69,6 +72,9 @@ func (api *Router) DeleteBookmark(r *http.Request) (*responses.Subsonic, error) 
 	return newResponse(), nil
 }
 
+// GetPlayQueue 返回用户保存的播放队列，用于跨设备续播。
+// 队列为空时返回空响应而非错误，因为「没有保存过队列」是正常状态。
+// current 以曲目 ID 表示当前项。
 func (api *Router) GetPlayQueue(r *http.Request) (*responses.Subsonic, error) {
 	user, _ := request.UserFrom(r.Context())
 
@@ -97,6 +103,8 @@ func (api *Router) GetPlayQueue(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// SavePlayQueue 保存播放队列。
+// 客户端以曲目 ID 指定当前项，需反查其下标；找不到时退回队首。
 func (api *Router) SavePlayQueue(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	ids, _ := p.Strings("id")
@@ -136,6 +144,7 @@ func (api *Router) SavePlayQueue(r *http.Request) (*responses.Subsonic, error) {
 	return newResponse(), nil
 }
 
+// GetPlayQueueByIndex 返回播放队列，当前项以下标表示（OpenSubsonic 扩展）。
 func (api *Router) GetPlayQueueByIndex(r *http.Request) (*responses.Subsonic, error) {
 	user, _ := request.UserFrom(r.Context())
 
@@ -166,6 +175,8 @@ func (api *Router) GetPlayQueueByIndex(r *http.Request) (*responses.Subsonic, er
 	return response, nil
 }
 
+// SavePlayQueueByIndex 保存播放队列，当前项以下标指定。
+// 队列非空时必须给出合法下标，越界视为参数错误。
 func (api *Router) SavePlayQueueByIndex(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	ids, _ := p.Strings("id")

@@ -13,6 +13,8 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// updateQueuePayload 是队列更新请求体。
+// 字段均为指针：需区分「未提供」与「显式置零」，以支持部分更新。
 type updateQueuePayload struct {
 	Ids      *[]string `json:"ids,omitempty"`
 	Current  *int      `json:"current,omitempty"`
@@ -53,6 +55,7 @@ func decodeUpdatePayload(w http.ResponseWriter, r *http.Request) (*updateQueuePa
 }
 
 // createMediaFileItems converts a slice of IDs to MediaFile items.
+// createMediaFileItems 把 ID 列表转成只含 ID 的媒体文件，仅用于持久化引用关系。
 func createMediaFileItems(ids []string) []model.MediaFile {
 	return slice.Map(ids, func(id string) model.MediaFile {
 		return model.MediaFile{ID: id}
@@ -66,6 +69,7 @@ func extractUserAndClient(ctx context.Context) (model.User, string) {
 	return user, client
 }
 
+// getQueue 返回当前用户的播放队列。队列不存在时返回空对象而非 404。
 func getQueue(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -91,6 +95,7 @@ func getQueue(ds model.DataStore) http.HandlerFunc {
 	}
 }
 
+// saveQueue 整体覆盖播放队列。
 func saveQueue(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -121,6 +126,11 @@ func saveQueue(ds model.DataStore) http.HandlerFunc {
 	}
 }
 
+// updateQueue 部分更新播放队列，只写入请求中出现的字段。
+//
+// 当前曲目下标必须与曲目列表匹配，故需分情况校验：
+// 同时更新两者时用新列表校验；只更新其一时，另一半从数据库取现值校验。
+// 这样可避免出现指向不存在曲目的下标。
 func updateQueue(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -200,6 +210,7 @@ func updateQueue(ds model.DataStore) http.HandlerFunc {
 	}
 }
 
+// clearQueue 清空当前用户的播放队列。
 func clearQueue(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

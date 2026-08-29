@@ -34,12 +34,16 @@ var sensitiveFieldsFullMask = []string{
 	"Prometheus.Password",
 }
 
+// configResponse 是配置查看接口的响应。
 type configResponse struct {
 	ID         string                 `json:"id"`
 	ConfigFile string                 `json:"configFile"`
 	Config     map[string]interface{} `json:"config"`
 }
 
+// redactValue 按字段名对敏感值脱敏。
+// 部分脱敏保留首尾字符，便于用户核对自己填的是哪一个密钥而不泄露内容；
+// 过短的值无法安全地保留首尾，一律全遮蔽。
 func redactValue(key string, value string) string {
 	// Return empty values as-is
 	if len(value) == 0 {
@@ -69,6 +73,7 @@ func redactValue(key string, value string) string {
 }
 
 // applySensitiveFieldMasking recursively applies masking to sensitive fields in the configuration map
+// applySensitiveFieldMasking 递归遍历配置树做脱敏，字段路径以点号拼接。
 func applySensitiveFieldMasking(ctx context.Context, config map[string]interface{}, prefix string) {
 	for key, value := range config {
 		fullKey := key
@@ -96,6 +101,8 @@ func applySensitiveFieldMasking(ctx context.Context, config map[string]interface
 	}
 }
 
+// getConfig 返回当前配置（已脱敏）。
+// 先序列化再反序列化成 map，以复用结构体上的 JSON 标签得到与配置文件一致的字段名。
 func getConfig(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 

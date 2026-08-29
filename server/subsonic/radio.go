@@ -8,6 +8,7 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// CreateInternetRadio 新增网络电台。
 func (api *Router) CreateInternetRadio(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	streamUrl, err := p.String("streamUrl")
@@ -36,6 +37,7 @@ func (api *Router) CreateInternetRadio(r *http.Request) (*responses.Subsonic, er
 	return newResponse(), nil
 }
 
+// DeleteInternetRadio 删除网络电台。
 func (api *Router) DeleteInternetRadio(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, err := p.String("id")
@@ -51,6 +53,7 @@ func (api *Router) DeleteInternetRadio(r *http.Request) (*responses.Subsonic, er
 	return newResponse(), nil
 }
 
+// GetInternetRadios 返回所有网络电台。
 func (api *Router) GetInternetRadios(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	radios, err := api.ds.Radio(ctx).GetAll(model.QueryOptions{Sort: "name"})
@@ -76,6 +79,7 @@ func (api *Router) GetInternetRadios(r *http.Request) (*responses.Subsonic, erro
 	return response, nil
 }
 
+// UpdateInternetRadio 更新网络电台，带 ID 的 Put 即为覆盖更新。
 func (api *Router) UpdateInternetRadio(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	id, err := p.String("id")

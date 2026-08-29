@@ -19,6 +19,8 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// GetAvatar 返回用户头像。
+// 未开启 Gravatar 或用户没有邮箱时回退占位图，而不是报错。
 func (api *Router) GetAvatar(w http.ResponseWriter, r *http.Request) (*responses.Subsonic, error) {
 	if !conf.Server.EnableGravatar {
 		return api.getPlaceHolderAvatar(w, r)
@@ -41,6 +43,7 @@ func (api *Router) GetAvatar(w http.ResponseWriter, r *http.Request) (*responses
 	return nil, nil
 }
 
+// getPlaceHolderAvatar 输出内置的占位头像。
 func (api *Router) getPlaceHolderAvatar(w http.ResponseWriter, r *http.Request) (*responses.Subsonic, error) {
 	f, err := resources.FS().Open(consts.PlaceholderAvatar)
 	if err != nil {
@@ -53,6 +56,11 @@ func (api *Router) getPlaceHolderAvatar(w http.ResponseWriter, r *http.Request) 
 	return nil, nil
 }
 
+// GetCoverArt 返回封面图。
+//
+// 客户端断开时直接放弃，省去无谓的取图开销；
+// 另设 10 秒超时，防止外部封面源拖住连接。
+// 图片按 ID 内容寻址，可长期缓存。
 func (api *Router) GetCoverArt(w http.ResponseWriter, r *http.Request) (*responses.Subsonic, error) {
 	// If context is already canceled, discard request without further processing
 	if r.Context().Err() != nil {
@@ -91,6 +99,8 @@ func (api *Router) GetCoverArt(w http.ResponseWriter, r *http.Request) (*respons
 	return nil, err
 }
 
+// GetLyrics 按艺人与标题查找歌词，返回纯文本形式。
+// 查询按「有歌词者优先」排序，取第一条匹配。
 func (api *Router) GetLyrics(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	artist, _ := p.String("artist")
@@ -130,6 +140,7 @@ func (api *Router) GetLyrics(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// GetLyricsBySongId 按曲目 ID 返回结构化歌词（OpenSubsonic 扩展）。
 func (api *Router) GetLyricsBySongId(r *http.Request) (*responses.Subsonic, error) {
 	id, err := req.Params(r).String("id")
 	if err != nil {

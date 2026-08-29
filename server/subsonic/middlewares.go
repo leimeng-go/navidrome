@@ -29,6 +29,8 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// postFormToQueryParams 把 POST 表单参数并入查询串。
+// Subsonic 允许以 GET 或 POST 表单传参，统一到一处后下游只需读查询参数。
 func postFormToQueryParams(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		err := r.ParseForm()
@@ -47,6 +49,8 @@ func postFormToQueryParams(next http.Handler) http.Handler {
 	})
 }
 
+// fromInternalOrProxyAuth 尝试从内部调用或反向代理头中取用户名。
+// 内部调用没有代理 IP，因此一旦命中就不再走反向代理认证，否则必然失败。
 func fromInternalOrProxyAuth(r *http.Request) (string, bool) {
 	username := server.InternalAuth(r)
 
@@ -59,6 +63,8 @@ func fromInternalOrProxyAuth(r *http.Request) (string, bool) {
 	return server.UsernameFromExtAuthHeader(r), false
 }
 
+// checkRequiredParameters 校验 Subsonic 必需参数（用户名、协议版本、客户端名）。
+// 已由内部或代理认证确定身份时，无需再要求 u 参数。
 func checkRequiredParameters(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var requiredParameters []string
@@ -95,6 +101,11 @@ func checkRequiredParameters(next http.Handler) http.Handler {
 	})
 }
 
+// authenticate 校验请求身份。
+//
+// 两条路径：由内部调用或可信代理确定身份时直接查用户；
+// 否则走 Subsonic 自身的凭据校验。
+// 无论何种失败原因，对外一律返回统一的认证失败错误，避免泄露账号是否存在。
 func authenticate(ds model.DataStore) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +164,11 @@ func authenticate(ds model.DataStore) func(next http.Handler) http.Handler {
 	}
 }
 
+// validateCredentials 校验 Subsonic 凭据。
+//
+// 支持三种方式：JWT（Web UI 复用）、明文密码（可为 enc: 前缀的十六进制编码）、
+// 以及 token+salt 的 md5 挑战式认证。
+// 后两者都要求服务端能拿到明文密码，这是 Subsonic 协议的固有限制。
 func validateCredentials(user *model.User, pass, token, salt, jwt string) error {
 	valid := false
 
@@ -178,6 +194,10 @@ func validateCredentials(user *model.User, pass, token, salt, jwt string) error 
 	return nil
 }
 
+// getPlayer 识别并登记发起请求的播放器。
+//
+// 播放器 ID 存于按用户区分的 Cookie，使同一客户端跨请求保持同一播放器身份，
+// 从而能记住其转码偏好。登记失败只记日志，不阻断请求。
 func getPlayer(players core.Players) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -213,6 +233,8 @@ func getPlayer(players core.Players) func(next http.Handler) http.Handler {
 	}
 }
 
+// canonicalUserAgent 把 User-Agent 归一化为「客户端名/系统」，
+// 避免版本号差异导致同一客户端被记成多个播放器。
 func canonicalUserAgent(r *http.Request) string {
 	u := ua.Parse(r.Header.Get("user-agent"))
 	userAgent := u.Name
@@ -222,6 +244,7 @@ func canonicalUserAgent(r *http.Request) string {
 	return userAgent
 }
 
+// playerIDFromCookie 从 Cookie 中读取播放器 ID。
 func playerIDFromCookie(r *http.Request, userName string) string {
 	cookieName := playerIDCookieName(userName)
 	var playerId string
@@ -232,13 +255,20 @@ func playerIDFromCookie(r *http.Request, userName string) string {
 	return playerId
 }
 
+// playerIDCookieName 生成按用户区分的 Cookie 名，避免同一浏览器多账号互相覆盖。
 func playerIDCookieName(userName string) string {
 	cookieName := fmt.Sprintf("nd-player-%x", userName)
 	return cookieName
 }
 
+// subsonicErrorPointer 是上下文键，用于让响应写出阶段回传真实的业务状态码。
 const subsonicErrorPointer = "subsonicErrorPointer"
 
+// recordStats 记录 Subsonic 请求的耗时与结果。
+//
+// Subsonic 出错时 HTTP 状态仍是 200，故真实结果需由 sendResponse 通过上下文指针回传；
+// 未回传（如 501）时才退回使用 HTTP 状态码。
+// 路径去掉 .view 后缀，使同一端点的两种写法归并统计。
 func recordStats(metrics metrics.Metrics) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {

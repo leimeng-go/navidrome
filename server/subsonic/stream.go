@@ -17,6 +17,10 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// serveStream 输出音频流。
+// 可 seek 的流走 ServeContent 以支持 Range；转码流长度未知，
+// 只能顺序输出并声明不支持 Range，必要时提供估算的 Content-Length。
+// HEAD 请求也需把流读空，否则转码进程不会退出。
 func (api *Router) serveStream(ctx context.Context, w http.ResponseWriter, r *http.Request, stream *core.Stream, id string) {
 	if stream.Seekable() {
 		http.ServeContent(w, r, stream.Name(), stream.ModTime(), stream)
@@ -49,6 +53,7 @@ func (api *Router) serveStream(ctx context.Context, w http.ResponseWriter, r *ht
 	}
 }
 
+// Stream 提供曲目播放流，按请求参数决定是否转码。
 func (api *Router) Stream(w http.ResponseWriter, r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	p := req.Params(r)
@@ -80,6 +85,13 @@ func (api *Router) Stream(w http.ResponseWriter, r *http.Request) (*responses.Su
 	return nil, nil
 }
 
+// Download 下载曲目、专辑、艺人或歌单。
+//
+// 单曲直接输出文件流；其余打包成 zip。
+// 未指定格式时默认原样下载（raw）；
+// 仅当开启 AutoTranscodeDownload 才沿用该客户端的转码设置——
+// 否则会让未走 UI 的客户端意外拿到转码后的文件。
+// 文件名中的逗号会被替换，避免破坏 Content-Disposition 头。
 func (api *Router) Download(w http.ResponseWriter, r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	username, _ := request.UsernameFrom(ctx)

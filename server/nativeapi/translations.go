@@ -16,18 +16,22 @@ import (
 	"github.com/navidrome/navidrome/resources"
 )
 
+// translation 是一份界面翻译，Data 为压缩后的 JSON 文本。
 type translation struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Data string `json:"data"`
 }
 
+// newTranslationRepository 创建翻译资源仓库。
 func newTranslationRepository(context.Context) rest.Repository {
 	return &translationRepository{}
 }
 
+// translationRepository 以只读 REST 资源的形式暴露内嵌的翻译文件。
 type translationRepository struct{}
 
+// Read 返回指定语言的完整翻译内容。
 func (r *translationRepository) Read(id string) (interface{}, error) {
 	translations, _ := loadTranslations()
 	if t, ok := translations[id]; ok {
@@ -61,6 +65,8 @@ func (r *translationRepository) NewInstance() interface{} {
 	return &translation{}
 }
 
+// loadTranslations 一次性加载全部翻译文件。
+// 翻译内容编译进二进制不会变化，故只需解析一次并常驻内存。
 var loadTranslations = sync.OnceValues(func() (map[string]translation, int64) {
 	translations := make(map[string]translation)
 	fsys := resources.FS()
@@ -88,6 +94,8 @@ var loadTranslations = sync.OnceValues(func() (map[string]translation, int64) {
 	return translations, int64(len(translations))
 })
 
+// loadTranslation 解析单个翻译文件。
+// 先解析出语言名，再把原始 JSON 压缩后存储，减小传给前端的体积。
 func loadTranslation(fsys fs.FS, fileName string) (translation translation, err error) {
 	// Get id and full path
 	name := path.Base(fileName)

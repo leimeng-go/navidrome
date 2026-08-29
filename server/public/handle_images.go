@@ -13,6 +13,11 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// handleImages 返回公开封面图。
+//
+// 请求已取消时直接返回，省去无谓的图片生成开销。
+// 单次处理限时 10 秒，防止慢速的封面提取拖住连接。
+// 图片按内容寻址不会变更，故设置超长缓存。
 func (pub *Router) handleImages(w http.ResponseWriter, r *http.Request) {
 	// If context is already canceled, discard request without further processing
 	if r.Context().Err() != nil {

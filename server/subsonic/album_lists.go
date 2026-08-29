@@ -16,6 +16,8 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// getAlbumList 依据 type 参数选择相应的专辑筛选与排序方式。
+// 单页上限 500，防止客户端请求过大结果集拖垮服务。
 func (api *Router) getAlbumList(r *http.Request) (model.Albums, int64, error) {
 	p := req.Params(r)
 	typ, err := p.String("type")
@@ -87,6 +89,8 @@ func (api *Router) getAlbumList(r *http.Request) (model.Albums, int64, error) {
 	return albums, count, nil
 }
 
+// GetAlbumList 返回专辑列表（旧版结构）。
+// 总数通过 x-total-count 响应头返回，因为协议本身没有该字段。
 func (api *Router) GetAlbumList(w http.ResponseWriter, r *http.Request) (*responses.Subsonic, error) {
 	albums, count, err := api.getAlbumList(r)
 	if err != nil {
@@ -102,6 +106,7 @@ func (api *Router) GetAlbumList(w http.ResponseWriter, r *http.Request) (*respon
 	return response, nil
 }
 
+// GetAlbumList2 返回专辑列表（ID3 结构）。
 func (api *Router) GetAlbumList2(w http.ResponseWriter, r *http.Request) (*responses.Subsonic, error) {
 	albums, pageCount, err := api.getAlbumList(r)
 	if err != nil {
@@ -117,6 +122,8 @@ func (api *Router) GetAlbumList2(w http.ResponseWriter, r *http.Request) (*respo
 	return response, nil
 }
 
+// getStarredItems 查询收藏的艺人、专辑与曲目。
+// 三者互不依赖，并行查询以缩短响应时间。
 func (api *Router) getStarredItems(r *http.Request) (model.Artists, model.Albums, model.MediaFiles, error) {
 	ctx := r.Context()
 
@@ -173,6 +180,7 @@ func (api *Router) getStarredItems(r *http.Request) (model.Artists, model.Albums
 	return artists, albums, mediaFiles, nil
 }
 
+// GetStarred 返回收藏内容（旧版结构）。
 func (api *Router) GetStarred(r *http.Request) (*responses.Subsonic, error) {
 	artists, albums, mediaFiles, err := api.getStarredItems(r)
 	if err != nil {
@@ -187,6 +195,7 @@ func (api *Router) GetStarred(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// GetStarred2 返回收藏内容（ID3 结构）。
 func (api *Router) GetStarred2(r *http.Request) (*responses.Subsonic, error) {
 	artists, albums, mediaFiles, err := api.getStarredItems(r)
 	if err != nil {
@@ -201,6 +210,7 @@ func (api *Router) GetStarred2(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// GetNowPlaying 返回所有用户当前正在播放的曲目。
 func (api *Router) GetNowPlaying(r *http.Request) (*responses.Subsonic, error) {
 	ctx := r.Context()
 	npInfo, err := api.scrobbler.GetNowPlaying(ctx)
@@ -224,6 +234,7 @@ func (api *Router) GetNowPlaying(r *http.Request) (*responses.Subsonic, error) {
 	return response, nil
 }
 
+// GetRandomSongs 返回随机曲目，可按风格与年份范围过滤。
 func (api *Router) GetRandomSongs(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	size := min(p.IntOr("size", 10), 500)
@@ -251,6 +262,7 @@ func (api *Router) GetRandomSongs(r *http.Request) (*responses.Subsonic, error) 
 	return response, nil
 }
 
+// GetSongsByGenre 返回指定风格的曲目。
 func (api *Router) GetSongsByGenre(r *http.Request) (*responses.Subsonic, error) {
 	p := req.Params(r)
 	count := min(p.IntOr("count", 10), 500)
@@ -278,6 +290,7 @@ func (api *Router) GetSongsByGenre(r *http.Request) (*responses.Subsonic, error)
 	return response, nil
 }
 
+// getSongs 按分页参数查询曲目。
 func (api *Router) getSongs(ctx context.Context, offset, size int, opts filter.Options) (model.MediaFiles, error) {
 	opts.Offset = offset
 	opts.Max = size

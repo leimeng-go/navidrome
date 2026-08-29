@@ -30,6 +30,7 @@ import (
 	"github.com/navidrome/navidrome/ui"
 )
 
+// Server 是 Navidrome 的 HTTP 服务器，负责装配路由与中间件栈。
 type Server struct {
 	router   chi.Router
 	ds       model.DataStore
@@ -38,6 +39,8 @@ type Server struct {
 	insights metrics.Insights
 }
 
+// New 创建服务器：完成首次初始化、认证初始化与路由挂载，
+// 并对 FFmpeg 与外部服务凭据做一次可用性检查（仅告警，不阻断启动）。
 func New(ds model.DataStore, broker events.Broker, insights metrics.Insights) *Server {
 	s := &Server{ds: ds, broker: broker, insights: insights}
 	initialSetup(ds)
@@ -50,6 +53,7 @@ func New(ds model.DataStore, broker events.Broker, insights metrics.Insights) *S
 	return s
 }
 
+// MountRouter 把子路由挂到 BasePath 之下，供各 API 模块注册。
 func (s *Server) MountRouter(description, urlPath string, subRouter http.Handler) {
 	urlPath = path.Join(conf.Server.BasePath, urlPath)
 	log.Info(fmt.Sprintf("Mounting %s routes", description), "path", urlPath)
@@ -59,6 +63,12 @@ func (s *Server) MountRouter(description, urlPath string, subRouter http.Handler
 }
 
 // Run starts the server with the given address, and if specified, with TLS enabled.
+//
+// Run 启动服务并阻塞至上下文取消。
+//
+// 启动后等待 50ms 观察 errC：绑定失败等错误会在这段时间内暴露，
+// 借此把「启动失败」与「运行中出错」区分开，避免误报「服务已就绪」。
+// 退出时关闭 keep-alive 并给 3 秒优雅关闭窗口。
 func (s *Server) Run(ctx context.Context, addr string, port int, tlsCert string, tlsKey string) error {
 	// Mount the router for the frontend assets
 	s.MountRouter("WebUI", consts.URLPathUI, s.frontendAssetsHandler())
@@ -144,6 +154,9 @@ func (s *Server) Run(ctx context.Context, addr string, port int, tlsCert string,
 	return nil
 }
 
+// createUnixSocketFile 创建 Unix socket 监听。
+// 需先删除残留的旧 socket 文件，否则 bind 会失败；
+// 权限位以八进制字符串配置，创建后再 chmod。
 func createUnixSocketFile(socketPath string, socketPerm string) (net.Listener, error) {
 	// Remove the socket file if it already exists
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
@@ -166,6 +179,11 @@ func createUnixSocketFile(socketPath string, socketPerm string) (net.Listener, e
 	return listener, nil
 }
 
+// initRoutes 构建路由与默认中间件栈。
+//
+// 中间件顺序有意为之：安全头与 CORS 最先，RequestID/RealIP 需在日志之前，
+// Recoverer 要能兜住后续所有中间件的 panic，JWTVerifier 置于末尾以便后续鉴权使用。
+// DevActivityPanel 的 SSE 端点单独分组：它是长连接，不能走 requestLogger。
 func (s *Server) initRoutes() {
 	s.appRoot = path.Join(conf.Server.BasePath, consts.URLPathUI)
 
@@ -204,6 +222,8 @@ func (s *Server) initRoutes() {
 	})
 }
 
+// mountAuthenticationRoutes 挂载登录与创建管理员接口。
+// 登录接口默认按 IP 限流以抵御暴力破解，关闭时给出显式告警。
 func (s *Server) mountAuthenticationRoutes() chi.Router {
 	r := s.router
 	return r.Route(path.Join(conf.Server.BasePath, "/auth"), func(r chi.Router) {
@@ -223,6 +243,7 @@ func (s *Server) mountAuthenticationRoutes() chi.Router {
 }
 
 // Serve UI app assets
+// mountRootRedirector 把根路径重定向到前端 UI 路径。
 func (s *Server) mountRootRedirector() {
 	r := s.router
 	// Redirect root to UI URL
@@ -234,6 +255,8 @@ func (s *Server) mountRootRedirector() {
 	})
 }
 
+// frontendAssetsHandler 提供前端静态资源。
+// 首页需经 Index 处理器注入运行时配置，其余静态文件直接从内嵌 FS 读取。
 func (s *Server) frontendAssetsHandler() http.Handler {
 	r := chi.NewRouter()
 
@@ -242,6 +265,9 @@ func (s *Server) frontendAssetsHandler() http.Handler {
 	return r
 }
 
+// AbsoluteURL 把相对路径补全为绝对 URL。
+// 配置了 BaseHost 时优先采用（反向代理场景下请求头中的 Host 可能不可靠），
+// 否则回退到当前请求的 Host。
 func AbsoluteURL(r *http.Request, u string, params url.Values) string {
 	buildUrl, _ := url.Parse(u)
 	if strings.HasPrefix(u, "/") {
@@ -262,6 +288,10 @@ func AbsoluteURL(r *http.Request, u string, params url.Values) string {
 
 // validateTLSCertificates validates the TLS certificate and key files before starting the server.
 // It provides detailed error messages for common issues like encrypted private keys.
+//
+// validateTLSCertificates 在启动前校验证书与私钥。
+// 提前校验是为了给出可读的错误提示——尤其是加密私钥这种常见误用，
+// 标准库的报错信息难以让用户定位问题。
 func validateTLSCertificates(certFile, keyFile string) error {
 	// Read the key file to check for encryption
 	keyData, err := os.ReadFile(keyFile)
@@ -292,6 +322,10 @@ func validateTLSCertificates(certFile, keyFile string) error {
 }
 
 // isEncryptedPEM checks if a PEM block represents an encrypted private key.
+//
+// isEncryptedPEM 判断私钥是否被加密。
+// 需覆盖三种情形：PKCS#8 的 ENCRYPTED PRIVATE KEY 类型、
+// 传统格式的 Proc-Type 头，以及 pem.Decode 未能正确解析头部时的原文兜底匹配。
 func isEncryptedPEM(block *pem.Block, rawData []byte) bool {
 	// Check for PKCS#8 encrypted format (BEGIN ENCRYPTED PRIVATE KEY)
 	if block.Type == "ENCRYPTED PRIVATE KEY" {

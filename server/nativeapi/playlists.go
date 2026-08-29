@@ -17,8 +17,12 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// restHandler 是 rest 包中通用处理器的签名。
 type restHandler = func(rest.RepositoryConstructor, ...rest.Logger) http.HandlerFunc
 
+// getPlaylist 返回歌单曲目列表。
+// Accept 为 M3U 时改为导出播放列表文件。
+// 仅在首页（_start=0）刷新智能歌单，避免翻页时反复重算。
 func getPlaylist(ds model.DataStore) http.HandlerFunc {
 	// Add a middleware to capture the playlistId
 	wrapper := func(handler restHandler) http.HandlerFunc {
@@ -45,6 +49,7 @@ func getPlaylist(ds model.DataStore) http.HandlerFunc {
 	}
 }
 
+// getPlaylistTrack 返回歌单中的单条曲目。
 func getPlaylistTrack(ds model.DataStore) http.HandlerFunc {
 	// Add a middleware to capture the playlistId
 	wrapper := func(handler restHandler) http.HandlerFunc {
@@ -62,6 +67,7 @@ func getPlaylistTrack(ds model.DataStore) http.HandlerFunc {
 	return wrapper(rest.Get)
 }
 
+// createPlaylistFromM3U 从上传的 M3U 内容导入歌单。
 func createPlaylistFromM3U(playlists core.Playlists) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -82,6 +88,7 @@ func createPlaylistFromM3U(playlists core.Playlists) http.HandlerFunc {
 	}
 }
 
+// handleExportPlaylist 以 M3U 文件形式导出歌单，并设置下载文件名。
 func handleExportPlaylist(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -112,6 +119,8 @@ func handleExportPlaylist(ds model.DataStore) http.HandlerFunc {
 	}
 }
 
+// deleteFromPlaylist 从歌单中移除曲目。
+// 用立即写事务，避免并发修改同一歌单时序号错乱。
 func deleteFromPlaylist(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := req.Params(r)
@@ -135,6 +144,8 @@ func deleteFromPlaylist(ds model.DataStore) http.HandlerFunc {
 	}
 }
 
+// addToPlaylist 向歌单添加曲目。
+// 支持按曲目、专辑、艺人、碟片四种粒度批量添加，返回实际新增条数。
 func addToPlaylist(ds model.DataStore) http.HandlerFunc {
 	type addTracksPayload struct {
 		Ids       []string       `json:"ids"`
@@ -183,6 +194,8 @@ func addToPlaylist(ds model.DataStore) http.HandlerFunc {
 	}
 }
 
+// reorderItem 调整歌单中曲目的顺序。
+// 智能歌单顺序由规则决定，手工调整会被拒绝（返回 403）。
 func reorderItem(ds model.DataStore) http.HandlerFunc {
 	type reorderPayload struct {
 		InsertBefore string `json:"insert_before"`
@@ -225,6 +238,7 @@ func reorderItem(ds model.DataStore) http.HandlerFunc {
 	}
 }
 
+// getSongPlaylists 返回包含指定曲目的歌单列表。
 func getSongPlaylists(ds model.DataStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := req.Params(r)

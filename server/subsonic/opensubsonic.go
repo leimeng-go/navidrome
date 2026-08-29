@@ -6,6 +6,7 @@ import (
 	"github.com/navidrome/navidrome/server/subsonic/responses"
 )
 
+// GetOpenSubsonicExtensions 声明本服务端支持的 OpenSubsonic 扩展，供客户端按能力协商。
 func (api *Router) GetOpenSubsonicExtensions(_ *http.Request) (*responses.Subsonic, error) {
 	response := newResponse()
 	response.OpenSubsonicExtensions = &responses.OpenSubsonicExtensions{

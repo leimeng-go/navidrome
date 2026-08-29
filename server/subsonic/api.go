@@ -24,11 +24,16 @@ import (
 	"github.com/navidrome/navidrome/utils/req"
 )
 
+// Version 是本实现声称兼容的 Subsonic API 版本。
 const Version = "1.16.1"
 
+// handler 是常规端点处理器，返回结构化响应由框架统一序列化。
 type handler = func(*http.Request) (*responses.Subsonic, error)
+
+// handlerRaw 用于需要直接写响应体的端点（如流媒体、封面图）。
 type handlerRaw = func(http.ResponseWriter, *http.Request) (*responses.Subsonic, error)
 
+// Router 实现 Subsonic 兼容 API，供第三方客户端接入。
 type Router struct {
 	http.Handler
 	ds        model.DataStore
@@ -46,6 +51,7 @@ type Router struct {
 	metrics   metrics.Metrics
 }
 
+// New 创建 Subsonic API 路由。
 func New(ds model.DataStore, artwork artwork.Artwork, streamer core.MediaStreamer, archiver core.Archiver,
 	players core.Players, provider external.Provider, scanner model.Scanner, broker events.Broker,
 	playlists core.Playlists, scrobbler scrobbler.PlayTracker, share core.Share, playback playback.PlaybackServer,
@@ -70,6 +76,13 @@ func New(ds model.DataStore, artwork artwork.Artwork, streamer core.MediaStreame
 	return r
 }
 
+// routes 注册全部 Subsonic 端点。
+//
+// postFormToQueryParams 需最先执行：Subsonic 允许参数以表单方式提交，
+// 统一转成查询参数后，后续处理无需区分来源。
+// getOpenSubsonicExtensions 是公开端点——客户端需在认证前探测服务端能力。
+// 各端点按功能分组并挂上 getPlayer，以便按客户端记录播放器与转码配置。
+// 未实现的端点返回 501，明确不打算实现的返回 410，避免客户端反复重试。
 func (api *Router) routes() http.Handler {
 	r := chi.NewRouter()
 
@@ -223,6 +236,7 @@ func (api *Router) routes() http.Handler {
 }
 
 // Add a Subsonic handler
+// h 注册一个常规端点。
 func h(r chi.Router, path string, f handler) {
 	hr(r, path, func(_ http.ResponseWriter, r *http.Request) (*responses.Subsonic, error) {
 		return f(r)
@@ -230,6 +244,8 @@ func h(r chi.Router, path string, f handler) {
 }
 
 // Add a Subsonic handler that requires an http.ResponseWriter (ex: stream, getCoverArt...)
+// hr 注册需直接操作响应体的端点。
+// 请求中途被取消时不再写响应，避免向已断开的连接写数据。
 func hr(r chi.Router, path string, f handlerRaw) {
 	handle := func(w http.ResponseWriter, r *http.Request) {
 		res, err := f(w, r)
@@ -251,6 +267,7 @@ func hr(r chi.Router, path string, f handlerRaw) {
 }
 
 // Add a handler that returns 501 - Not implemented. Used to signal that an endpoint is not implemented yet
+// h501 注册返回「尚未实现」的端点。
 func h501(r chi.Router, paths ...string) {
 	for _, path := range paths {
 		handle := func(w http.ResponseWriter, r *http.Request) {
@@ -263,6 +280,7 @@ func h501(r chi.Router, paths ...string) {
 }
 
 // Add a handler that returns 410 - Gone. Used to signal that an endpoint will not be implemented
+// h410 注册返回「不会实现」的端点。
 func h410(r chi.Router, paths ...string) {
 	for _, path := range paths {
 		handle := func(w http.ResponseWriter, r *http.Request) {
@@ -273,11 +291,15 @@ func h410(r chi.Router, paths ...string) {
 	}
 }
 
+// addHandler 同时注册带与不带 .view 后缀的路径，
+// 老客户端习惯请求 xxx.view，需一并兼容。
 func addHandler(r chi.Router, path string, handle func(w http.ResponseWriter, r *http.Request)) {
 	r.HandleFunc("/"+path, handle)
 	r.HandleFunc("/"+path+".view", handle)
 }
 
+// mapToSubsonicError 把内部错误映射为 Subsonic 错误码。
+// 未识别的错误统一归为通用错误，避免把内部实现细节透给客户端。
 func mapToSubsonicError(err error) subError {
 	switch {
 	case errors.Is(err, errSubsonic): // do nothing
@@ -295,6 +317,8 @@ func mapToSubsonicError(err error) subError {
 	return subErr
 }
 
+// sendError 以 Subsonic 约定的格式返回错误。
+// 注意仍返回 HTTP 200，错误信息在响应体内——这是协议要求。
 func sendError(w http.ResponseWriter, r *http.Request, err error) {
 	subErr := mapToSubsonicError(err)
 	response := newResponse()
@@ -304,6 +328,10 @@ func sendError(w http.ResponseWriter, r *http.Request, err error) {
 	sendResponse(w, r, response)
 }
 
+// sendResponse 按客户端请求的格式（xml/json/jsonp）序列化并输出响应。
+//
+// 结果状态码会回写到上下文中的指针，供指标中间件统计——
+// 因为 HTTP 状态恒为 200，只能从响应体里取真实结果。
 func sendResponse(w http.ResponseWriter, r *http.Request, payload *responses.Subsonic) {
 	p := req.Params(r)
 	f, _ := p.String("f")

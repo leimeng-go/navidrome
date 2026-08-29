@@ -1,3 +1,8 @@
+// Package responses 定义 Subsonic API 的响应结构。
+//
+// 每个类型同时带 xml 与 json 标签：同一份结构要按客户端要求序列化成
+// XML、JSON 或 JSONP 三种格式，故字段的可选性（omitempty）必须与协议 XSD 严格一致，
+// 多输出或少输出字段都会导致部分客户端解析失败。
 package responses
 
 import (
@@ -6,6 +11,8 @@ import (
 	"time"
 )
 
+// Subsonic 是所有接口的响应根节点。
+// 各接口的结果字段互斥且均为指针加 omitempty，保证响应中只出现本次请求对应的那一个。
 type Subsonic struct {
 	XMLName       xml.Name           `xml:"http://subsonic.org/restapi subsonic-response" json:"-"`
 	Status        string             `xml:"status,attr"                                   json:"status"`
@@ -63,15 +70,18 @@ type Subsonic struct {
 	PlayQueueByIndex       *PlayQueueByIndex       `xml:"playQueueByIndex,omitempty" json:"playQueueByIndex,omitempty"`
 }
 
+// 响应状态取值。
 const (
 	StatusOK     = "ok"
 	StatusFailed = "failed"
 )
 
+// JsonWrapper 为 JSON 输出补上 subsonic-response 外层包装，对应 XML 的根元素。
 type JsonWrapper struct {
 	Subsonic Subsonic `json:"subsonic-response"`
 }
 
+// Error 错误详情。
 type Error struct {
 	Code    int32  `xml:"code,attr"                      json:"code"`
 	Message string `xml:"message,attr"                   json:"message"`
@@ -124,6 +134,7 @@ type Artists struct {
 	IgnoredArticles string     `xml:"ignoredArticles,attr"   json:"ignoredArticles"`
 }
 
+// MediaType 标识条目类型。
 type MediaType string
 
 const (
@@ -132,6 +143,7 @@ const (
 	MediaTypeArtist MediaType = "artist"
 )
 
+// Child 是目录浏览下的通用条目，曲目与专辑共用同一结构，靠 isDir 区分。
 type Child struct {
 	Id                    string     `xml:"id,attr"                                 json:"id"`
 	Parent                string     `xml:"parent,attr,omitempty"                   json:"parent,omitempty"`
@@ -169,6 +181,7 @@ type Child struct {
 	*OpenSubsonicChild `xml:",omitempty" json:",omitempty"`
 }
 
+// OpenSubsonicChild 是 Child 的 OpenSubsonic 扩展字段，内嵌输出，老客户端可忽略。
 type OpenSubsonicChild struct {
 	// OpenSubsonic extensions
 	Played             *time.Time          `xml:"played,attr,omitempty"             json:"played,omitempty"`
@@ -225,6 +238,7 @@ type Directory struct {
 
 // ArtistID3Ref is a reference to an artist, a simplified version of ArtistID3. This is used to resolve the
 // documentation conflict in OpenSubsonic: https://github.com/opensubsonic/open-subsonic-api/discussions/120
+// ArtistID3Ref 是艺人的轻量引用，仅含 ID 与名称。
 type ArtistID3Ref struct {
 	Id   string `xml:"id,attr"   json:"id"`
 	Name string `xml:"name,attr" json:"name"`
@@ -555,6 +569,7 @@ type ItemGenre struct {
 	Name string `xml:"name,attr" json:"name"`
 }
 
+// ReplayGain 回放增益信息。
 type ReplayGain struct {
 	TrackGain    *float64 `xml:"trackGain,omitempty,attr"    json:"trackGain,omitempty"`
 	AlbumGain    *float64 `xml:"albumGain,omitempty,attr"    json:"albumGain,omitempty"`
@@ -564,6 +579,8 @@ type ReplayGain struct {
 	FallbackGain *float64 `xml:"fallbackGain,omitempty,attr" json:"fallbackGain,omitempty"`
 }
 
+// MarshalXML 在所有增益字段均为空时整体略去该元素。
+// XML 无法像 JSON 那样用 omitempty 省略结构体，只能自定义序列化。
 func (r ReplayGain) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 	if r.TrackGain == nil && r.AlbumGain == nil && r.TrackPeak == nil && r.AlbumPeak == nil && r.BaseGain == nil && r.FallbackGain == nil {
 		return nil
@@ -577,12 +594,14 @@ type DiscTitle struct {
 	Title string `xml:"title,attr" json:"title"`
 }
 
+// ItemDate 支持年/月/日部分精度的日期。
 type ItemDate struct {
 	Year  int32 `xml:"year,attr,omitempty" json:"year,omitempty"`
 	Month int32 `xml:"month,attr,omitempty" json:"month,omitempty"`
 	Day   int32 `xml:"day,attr,omitempty" json:"day,omitempty"`
 }
 
+// MarshalXML 在日期完全为空时略去该元素。
 func (d ItemDate) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 	if d.Year == 0 && d.Month == 0 && d.Day == 0 {
 		return nil
@@ -595,6 +614,7 @@ type RecordLabel struct {
 	Name string `xml:"name,attr" json:"name"`
 }
 
+// Contributor 参与者及其角色。
 type Contributor struct {
 	Role    string       `xml:"role,attr" json:"role"`
 	SubRole string       `xml:"subRole,attr,omitempty" json:"subRole,omitempty"`
@@ -602,6 +622,7 @@ type Contributor struct {
 }
 
 // Array is a generic type for marshalling slices to JSON. It is used to avoid marshalling empty slices as null.
+// Array 用于把空切片序列化成 []，而非 null：不少客户端遇到 null 会直接报错。
 type Array[T any] []T
 
 func (a Array[T]) MarshalJSON() ([]byte, error) {
@@ -610,6 +631,7 @@ func (a Array[T]) MarshalJSON() ([]byte, error) {
 
 // marshalJSONArray marshals a slice of any type to JSON. If the slice is empty, it is marshalled as an
 // empty array instead of null.
+// marshalJSONArray 空切片输出为空数组。
 func marshalJSONArray[T any](v []T) ([]byte, error) {
 	if len(v) == 0 {
 		return json.Marshal([]T{})

@@ -20,15 +20,23 @@ import (
 	"github.com/navidrome/navidrome/utils/str"
 )
 
+// Index 返回前端首页处理器。
 func Index(ds model.DataStore, fs fs.FS) http.HandlerFunc {
 	return serveIndex(ds, fs, nil)
 }
 
+// IndexWithShare 返回带分享信息的首页处理器，供公开分享页使用。
 func IndexWithShare(ds model.DataStore, fs fs.FS, shareInfo *model.Share) http.HandlerFunc {
 	return serveIndex(ds, fs, shareInfo)
 }
 
 // Injects the config in the `index.html` template
+//
+// serveIndex 渲染首页，把服务端配置以 JSON 形式注入模板。
+//
+// 前端需要这些开关来决定渲染哪些功能，通过内联注入可省去一次额外请求。
+// 用户数为 0 时置 firstTime，引导前端进入创建管理员流程。
+// 用户可自定义的文本（欢迎语、背景图地址）需经 SanitizeText 处理以防 XSS。
 func serveIndex(ds model.DataStore, fs fs.FS, shareInfo *model.Share) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := ds.User(r.Context()).CountAll()
@@ -108,6 +116,7 @@ func serveIndex(ds model.DataStore, fs fs.FS, shareInfo *model.Share) http.Handl
 	}
 }
 
+// getIndexTemplate 从内嵌 FS 读取并解析 index.html 模板。
 func getIndexTemplate(r *http.Request, fs fs.FS) (*template.Template, error) {
 	t := template.New("initial state")
 	indexHtml, err := fs.Open("index.html")
@@ -128,6 +137,7 @@ func getIndexTemplate(r *http.Request, fs fs.FS) (*template.Template, error) {
 	return t, nil
 }
 
+// shareData 是注入分享页的数据。
 type shareData struct {
 	ID           string       `json:"id"`
 	Description  string       `json:"description"`
@@ -135,6 +145,7 @@ type shareData struct {
 	Tracks       []shareTrack `json:"tracks"`
 }
 
+// shareTrack 是分享页中的曲目信息，只暴露展示所需的最小字段。
 type shareTrack struct {
 	ID        string    `json:"id,omitempty"`
 	Title     string    `json:"title,omitempty"`
@@ -144,6 +155,9 @@ type shareTrack struct {
 	Duration  float32   `json:"duration,omitempty"`
 }
 
+// addShareData 注入分享数据与 Open Graph 所需的描述、链接与封面，
+// 使分享链接在社交平台上能生成预览卡片。
+// 未填描述时退回用曲目列表内容作为描述。
 func addShareData(r *http.Request, data map[string]interface{}, shareInfo *model.Share) {
 	ctx := r.Context()
 	if shareInfo == nil || shareInfo.ID == "" {
