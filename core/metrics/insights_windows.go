@@ -10,6 +10,7 @@ import (
 // Ex: Microsoft Windows [Version 10.0.26100.1742]
 var winVerRegex = regexp.MustCompile(`Microsoft Windows \[.+\s([\d\.]+)\]`)
 
+// getOSVersion 执行 `cmd /c ver` 并提取版本号，无法匹配时返回原始输出。
 func getOSVersion() (version string, _ string) {
 	cmd := exec.Command("cmd", "/c", "ver")
 
@@ -25,6 +26,7 @@ func getOSVersion() (version string, _ string) {
 	return matches[1], ""
 }
 
+// getFilesystemType 通过 GetVolumeInformation 获取卷的文件系统名（如 NTFS）。
 func getFilesystemType(path string) (string, error) {
 	pathPtr, err := windows.UTF16PtrFromString(path)
 	if err != nil {

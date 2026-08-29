@@ -18,12 +18,14 @@ import (
 	"github.com/navidrome/navidrome/server"
 )
 
+// sessionKeysRepo 抽象 token 的存取，便于测试替换。
 type sessionKeysRepo interface {
 	Put(ctx context.Context, userId, sessionKey string) error
 	Get(ctx context.Context, userId string) (string, error)
 	Delete(ctx context.Context, userId string) error
 }
 
+// Router 提供 ListenBrainz 账号关联相关的 HTTP 接口。
 type Router struct {
 	http.Handler
 	ds          model.DataStore
@@ -31,6 +33,7 @@ type Router struct {
 	client      *client
 }
 
+// NewRouter 创建关联路由。
 func NewRouter(ds model.DataStore) *Router {
 	r := &Router{
 		ds:          ds,
@@ -44,6 +47,8 @@ func NewRouter(ds model.DataStore) *Router {
 	return r
 }
 
+// routes 注册路由。
+// 与 Last.fm 不同，ListenBrainz 由用户直接粘贴 token，无需回调，故全部接口都要求登录。
 func (s *Router) routes() http.Handler {
 	r := chi.NewRouter()
 
@@ -59,6 +64,7 @@ func (s *Router) routes() http.Handler {
 	return r
 }
 
+// getLinkStatus 返回当前用户是否已关联。
 func (s *Router) getLinkStatus(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{}
 	u, _ := request.UserFrom(r.Context())
@@ -73,6 +79,8 @@ func (s *Router) getLinkStatus(w http.ResponseWriter, r *http.Request) {
 	_ = rest.RespondWithJSON(w, http.StatusOK, resp)
 }
 
+// link 保存用户提交的 token。
+// 先调用 validate-token 校验再落库，避免存入无效 token 导致后续上报持续失败。
 func (s *Router) link(w http.ResponseWriter, r *http.Request) {
 	type tokenPayload struct {
 		Token string `json:"token"`
@@ -110,6 +118,7 @@ func (s *Router) link(w http.ResponseWriter, r *http.Request) {
 	_ = rest.RespondWithJSON(w, http.StatusOK, map[string]interface{}{"status": resp.Valid, "user": resp.UserName})
 }
 
+// unlink 解除关联，删除已保存的 token。
 func (s *Router) unlink(w http.ResponseWriter, r *http.Request) {
 	u, _ := request.UserFrom(r.Context())
 	err := s.sessionKeys.Delete(r.Context(), u.ID)

@@ -27,6 +27,8 @@ const (
 	maxArtistFolderTraversalDepth = 3
 )
 
+// artistReader 读取艺术家图片。
+// 艺术家在文件系统中没有专属记录，其目录由旗下专辑目录的公共前缀推断得出。
 type artistReader struct {
 	cacheKey
 	a            *artwork
@@ -36,6 +38,10 @@ type artistReader struct {
 	imgFiles     []string
 }
 
+// newArtistArtworkReader 构造艺术家图片读取器。
+//
+// 只统计该艺术家为唯一专辑艺术家的专辑：
+// 合辑中的专辑目录属于合辑而非某位艺术家，用它推断目录会得出错误结果。
 func newArtistArtworkReader(ctx context.Context, artwork *artwork, artID model.ArtworkID, provider external.Provider) (*artistReader, error) {
 	ar, err := artwork.ds.Artist(ctx).Get(artID.ID)
 	if err != nil {
@@ -78,6 +84,7 @@ func newArtistArtworkReader(ctx context.Context, artwork *artwork, artID model.A
 	return a, nil
 }
 
+// Key 生成缓存键，混入代理与 Spotify 配置的摘要，使配置变更后缓存自动失效。
 func (a *artistReader) Key() string {
 	hash := md5.Sum([]byte(conf.Server.Agents + conf.Server.Spotify.ID))
 	return fmt.Sprintf(
@@ -92,11 +99,15 @@ func (a *artistReader) LastUpdated() time.Time {
 	return a.lastUpdate
 }
 
+// Reader 按 ArtistArtPriority 配置依次尝试各来源。
 func (a *artistReader) Reader(ctx context.Context) (io.ReadCloser, string, error) {
 	var ff = a.fromArtistArtPriority(ctx, conf.Server.ArtistArtPriority)
 	return selectImageReader(ctx, a.artID, ff...)
 }
 
+// fromArtistArtPriority 解析艺术家图片优先级配置。
+// external 走外部代理；「album/」前缀表示在专辑目录下找；
+// 其余在艺术家目录（含上层目录）中按通配符查找。
 func (a *artistReader) fromArtistArtPriority(ctx context.Context, priority string) []sourceFunc {
 	var ff []sourceFunc
 	for _, pattern := range strings.Split(strings.ToLower(priority), ",") {
@@ -113,6 +124,8 @@ func (a *artistReader) fromArtistArtPriority(ctx context.Context, priority strin
 	return ff
 }
 
+// fromArtistFolder 在艺术家目录及其上层目录中查找图片，最多上溯 3 层。
+// 上溯是因为图片常被放在更上层（如「艺术家/」或流派目录）。
 func fromArtistFolder(ctx context.Context, artistFolder string, pattern string) sourceFunc {
 	return func() (io.ReadCloser, string, error) {
 		current := artistFolder
@@ -131,6 +144,8 @@ func fromArtistFolder(ctx context.Context, artistFolder string, pattern string) 
 	}
 }
 
+// findImageInFolder 在单个目录中按通配符查找图片，
+// 过滤出真正的图片文件后排序，逐个尝试打开直到成功。
 func findImageInFolder(ctx context.Context, folder, pattern string) (io.ReadCloser, string, error) {
 	log.Trace(ctx, "looking for artist image", "pattern", pattern, "folder", folder)
 	fsys := os.DirFS(folder)
@@ -167,6 +182,10 @@ func findImageInFolder(ctx context.Context, folder, pattern string) (io.ReadClos
 	return nil, "", fmt.Errorf(`no matches for '%s' in '%s'`, pattern, folder)
 }
 
+// loadArtistFolder 推断艺术家目录：取旗下所有专辑目录的最长公共前缀再上溯一级。
+// 例如专辑在 /music/Beatles/Abbey Road 与 /music/Beatles/Revolver，
+// 则推断艺术家目录为 /music/Beatles。
+// 同时返回该目录的图片更新时间用于缓存失效判断。
 func loadArtistFolder(ctx context.Context, ds model.DataStore, albums model.Albums, paths []string) (string, time.Time, error) {
 	if len(albums) == 0 {
 		return "", time.Time{}, nil

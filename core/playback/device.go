@@ -11,6 +11,7 @@ import (
 	"github.com/navidrome/navidrome/model"
 )
 
+// Track 是一路正在播放的音轨，由具体播放后端（当前为 MPV）实现。
 type Track interface {
 	IsPlaying() bool
 	SetVolume(value float32) // Used to control the playback volume. A float value between 0.0 and 1.0.
@@ -22,6 +23,8 @@ type Track interface {
 	String() string
 }
 
+// playbackDevice 是一个音频播放设备，持有自己的播放队列与当前音轨。
+// startTrackSwitcher 保证切歌协程只启动一次。
 type playbackDevice struct {
 	serviceCtx           context.Context
 	ParentPlaybackServer PlaybackServer
@@ -36,6 +39,7 @@ type playbackDevice struct {
 	startTrackSwitcher   sync.Once
 }
 
+// DeviceStatus 是设备状态快照，对应 Subsonic jukeboxControl 的响应字段。
 type DeviceStatus struct {
 	CurrentIndex int
 	Playing      bool
@@ -43,8 +47,10 @@ type DeviceStatus struct {
 	Position     int
 }
 
+// DefaultGain 是默认音量增益（满音量）。
 const DefaultGain float32 = 1.0
 
+// getStatus 汇总当前设备状态。
 func (pd *playbackDevice) getStatus() DeviceStatus {
 	pos := 0
 	if pd.ActiveTrack != nil {
@@ -78,11 +84,13 @@ func (pd *playbackDevice) String() string {
 	return fmt.Sprintf("Name: %s, Gain: %.4f, Loaded track: %s", pd.Name, pd.Gain, pd.ActiveTrack)
 }
 
+// Get 返回队列内容与设备状态。
 func (pd *playbackDevice) Get(ctx context.Context) (model.MediaFiles, DeviceStatus, error) {
 	log.Debug(ctx, "Processing Get action", "device", pd)
 	return pd.PlaybackQueue.Get(), pd.getStatus(), nil
 }
 
+// Status 返回设备状态。
 func (pd *playbackDevice) Status(ctx context.Context) (DeviceStatus, error) {
 	log.Debug(ctx, fmt.Sprintf("processing Status action on: %s, queue: %s", pd, pd.PlaybackQueue))
 	return pd.getStatus(), nil
@@ -100,6 +108,10 @@ func (pd *playbackDevice) Set(ctx context.Context, ids []string) (DeviceStatus, 
 	return pd.Add(ctx, ids)
 }
 
+// Start 开始或恢复播放。
+//
+// 首次调用时惰性启动切歌协程：设备可能永远不被使用，无谓的常驻协程应当避免。
+// 已有音轨则恢复播放，否则从队列当前位置加载。
 func (pd *playbackDevice) Start(ctx context.Context) (DeviceStatus, error) {
 	log.Debug(ctx, "Processing Start action", "device", pd)
 
@@ -130,6 +142,7 @@ func (pd *playbackDevice) Start(ctx context.Context) (DeviceStatus, error) {
 	return pd.getStatus(), nil
 }
 
+// Stop 暂停播放（Subsonic 的 stop 语义即暂停，播放位置保留）。
 func (pd *playbackDevice) Stop(ctx context.Context) (DeviceStatus, error) {
 	log.Debug(ctx, "Processing Stop action", "device", pd)
 	if pd.ActiveTrack != nil {
@@ -138,6 +151,9 @@ func (pd *playbackDevice) Stop(ctx context.Context) (DeviceStatus, error) {
 	return pd.getStatus(), nil
 }
 
+// Skip 跳转到指定曲目的指定位置。
+// 换曲时需关闭旧音轨释放解码资源；
+// 操作前后保持播放状态一致——原本在放就继续放，原本暂停就保持暂停。
 func (pd *playbackDevice) Skip(ctx context.Context, index int, offset int) (DeviceStatus, error) {
 	log.Debug(ctx, "Processing Skip action", "index", index, "offset", offset, "device", pd)
 
@@ -176,6 +192,7 @@ func (pd *playbackDevice) Skip(ctx context.Context, index int, offset int) (Devi
 	return pd.getStatus(), nil
 }
 
+// Add 向队列追加曲目。任一 ID 无效则整体失败，不做部分添加。
 func (pd *playbackDevice) Add(ctx context.Context, ids []string) (DeviceStatus, error) {
 	log.Debug(ctx, "Processing Add action", "ids", ids, "device", pd)
 	if len(ids) < 1 {
@@ -197,6 +214,7 @@ func (pd *playbackDevice) Add(ctx context.Context, ids []string) (DeviceStatus, 
 	return pd.getStatus(), nil
 }
 
+// Clear 清空队列并关闭当前音轨。
 func (pd *playbackDevice) Clear(ctx context.Context) (DeviceStatus, error) {
 	log.Debug(ctx, "Processing Clear action", "device", pd)
 	if pd.ActiveTrack != nil {
@@ -208,6 +226,7 @@ func (pd *playbackDevice) Clear(ctx context.Context) (DeviceStatus, error) {
 	return pd.getStatus(), nil
 }
 
+// Remove 移除队列中指定位置的曲目，移除的若是正在播放的则先暂停。
 func (pd *playbackDevice) Remove(ctx context.Context, index int) (DeviceStatus, error) {
 	log.Debug(ctx, "Processing Remove action", "index", index, "device", pd)
 	// pausing if attempting to remove running track
@@ -227,6 +246,7 @@ func (pd *playbackDevice) Remove(ctx context.Context, index int) (DeviceStatus, 
 	return pd.getStatus(), nil
 }
 
+// Shuffle 打乱队列顺序。
 func (pd *playbackDevice) Shuffle(ctx context.Context) (DeviceStatus, error) {
 	log.Debug(ctx, "Processing Shuffle action", "device", pd)
 	if pd.PlaybackQueue.Size() > 1 {
@@ -247,10 +267,13 @@ func (pd *playbackDevice) SetGain(ctx context.Context, gain float32) (DeviceStat
 	return pd.getStatus(), nil
 }
 
+// isPlaying 判断当前是否有音轨正在播放。
 func (pd *playbackDevice) isPlaying() bool {
 	return pd.ActiveTrack != nil && pd.ActiveTrack.IsPlaying()
 }
 
+// trackSwitcherGoroutine 监听播放完成信号并自动切到下一首。
+// 每个设备一个协程，随服务上下文取消而退出。
 func (pd *playbackDevice) trackSwitcherGoroutine() {
 	log.Debug("Started trackSwitcher goroutine", "device", pd)
 	for {
@@ -282,6 +305,8 @@ func (pd *playbackDevice) trackSwitcherGoroutine() {
 	}
 }
 
+// switchActiveTrackByIndex 加载队列中指定位置的曲目为当前音轨，
+// 并套用设备已有的音量设置（新音轨默认满音量）。
 func (pd *playbackDevice) switchActiveTrackByIndex(index int) error {
 	pd.PlaybackQueue.SetIndex(index)
 	currentTrack := pd.PlaybackQueue.Current()

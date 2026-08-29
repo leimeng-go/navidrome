@@ -16,14 +16,18 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// playlistArtworkReader 生成播放列表封面。
+// 播放列表没有自己的图片，故用其中随机 4 张专辑封面拼成一张 2x2 马赛克图。
 type playlistArtworkReader struct {
 	cacheKey
 	a  *artwork
 	pl model.Playlist
 }
 
+// tileSize 是生成图的边长，每个小格为其一半。
 const tileSize = 600
 
+// newPlaylistArtworkReader 构造播放列表封面读取器。
 func newPlaylistArtworkReader(ctx context.Context, artwork *artwork, artID model.ArtworkID) (*playlistArtworkReader, error) {
 	pl, err := artwork.ds.Playlist(ctx).Get(artID.ID)
 	if err != nil {
@@ -42,6 +46,7 @@ func (a *playlistArtworkReader) LastUpdated() time.Time {
 	return a.lastUpdate
 }
 
+// Reader 尝试生成拼图，失败（如列表为空）则返回占位图。
 func (a *playlistArtworkReader) Reader(ctx context.Context) (io.ReadCloser, string, error) {
 	ff := []sourceFunc{
 		a.fromGeneratedTiledCover(ctx),
@@ -50,6 +55,7 @@ func (a *playlistArtworkReader) Reader(ctx context.Context) (io.ReadCloser, stri
 	return selectImageReader(ctx, a.artID, ff...)
 }
 
+// fromGeneratedTiledCover 生成马赛克拼图。
 func (a *playlistArtworkReader) fromGeneratedTiledCover(ctx context.Context) sourceFunc {
 	return func() (io.ReadCloser, string, error) {
 		tiles, err := a.loadTiles(ctx)
@@ -61,6 +67,7 @@ func (a *playlistArtworkReader) fromGeneratedTiledCover(ctx context.Context) sou
 	}
 }
 
+// toAlbumArtworkIDs 把专辑 ID 转换为对应的封面 ID。
 func toAlbumArtworkIDs(albumIDs []string) []model.ArtworkID {
 	return slice.Map(albumIDs, func(id string) model.ArtworkID {
 		al := model.Album{ID: id}
@@ -68,6 +75,11 @@ func toAlbumArtworkIDs(albumIDs []string) []model.ArtworkID {
 	})
 }
 
+// loadTiles 随机取列表中至多 4 张专辑封面作为拼图素材。
+//
+// 不足 4 张时复制补齐，以保证拼图始终对称：
+// 2 张按 ABBA 排布，3 张则重复第一张。
+// 一张都没有时返回错误，交由占位图兜底。
 func (a *playlistArtworkReader) loadTiles(ctx context.Context) ([]image.Image, error) {
 	tracksRepo := a.a.ds.Playlist(ctx).Tracks(a.pl.ID, false)
 	albumIds, err := tracksRepo.GetAlbumIDs(model.QueryOptions{Max: 4, Sort: "random()"})
@@ -102,6 +114,7 @@ func (a *playlistArtworkReader) loadTiles(ctx context.Context) ([]image.Image, e
 	return tiles, nil
 }
 
+// createTile 把一张封面裁剪缩放为正方形小格（居中裁剪 + Lanczos 重采样）。
 func (a *playlistArtworkReader) createTile(_ context.Context, r io.ReadCloser) (image.Image, error) {
 	img, _, err := image.Decode(r)
 	if err != nil {
@@ -110,6 +123,8 @@ func (a *playlistArtworkReader) createTile(_ context.Context, r io.ReadCloser) (
 	return imaging.Fill(img, tileSize/2, tileSize/2, imaging.Center, imaging.Lanczos), nil
 }
 
+// createTiledImage 把 4 张小格拼成 2x2 的 PNG。
+// 只有一张素材时直接输出该图，不做拼接。
 func (a *playlistArtworkReader) createTiledImage(_ context.Context, tiles []image.Image) (io.ReadCloser, error) {
 	buf := new(bytes.Buffer)
 	var rgba draw.Image
@@ -130,6 +145,7 @@ func (a *playlistArtworkReader) createTiledImage(_ context.Context, tiles []imag
 	return io.NopCloser(buf), nil
 }
 
+// rect 返回第 pos 个小格在 2x2 布局中的区域：0 左上、1 右上、2 左下、3 右下。
 func rect(pos int) image.Rectangle {
 	r := image.Rectangle{}
 	switch pos {

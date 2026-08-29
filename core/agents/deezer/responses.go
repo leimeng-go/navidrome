@@ -1,11 +1,13 @@
 package deezer
 
+// SearchArtistResults 是艺人搜索的响应。
 type SearchArtistResults struct {
 	Data  []Artist `json:"data"`
 	Total int      `json:"total"`
 	Next  string   `json:"next"`
 }
 
+// Artist 是艺人信息，图片提供 small/medium/big/xl 四档尺寸。
 type Artist struct {
 	ID            int    `json:"id"`
 	Name          string `json:"name"`
@@ -22,6 +24,7 @@ type Artist struct {
 	Type          string `json:"type"`
 }
 
+// Error 是 Deezer 的错误响应。
 type Error struct {
 	Error struct {
 		Type    string `json:"type"`
@@ -30,17 +33,20 @@ type Error struct {
 	} `json:"error"`
 }
 
+// RelatedArtists 是相关艺人的响应。
 type RelatedArtists struct {
 	Data  []Artist `json:"data"`
 	Total int      `json:"total"`
 }
 
+// TopTracks 是热门曲目的响应。
 type TopTracks struct {
 	Data  []Track `json:"data"`
 	Total int     `json:"total"`
 	Next  string  `json:"next"`
 }
 
+// Track 是曲目信息。
 type Track struct {
 	ID           int      `json:"id"`
 	Title        string   `json:"title"`
@@ -53,6 +59,7 @@ type Track struct {
 	Contributors []Artist `json:"contributors"`
 }
 
+// Album 是专辑信息。
 type Album struct {
 	ID          int    `json:"id"`
 	Title       string `json:"title"`

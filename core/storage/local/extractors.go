@@ -8,11 +8,15 @@ import (
 )
 
 // Extractor is an interface that defines the methods that a tag/metadata extractor must implement
+//
+// Extractor 是标签提取器接口。Version 参与扫描判断：
+// 提取器版本变化时需要重新扫描全部文件。
 type Extractor interface {
 	Parse(files ...string) (map[string]metadata.Info, error)
 	Version() string
 }
 
+// extractorConstructor 是提取器构造函数，接收文件系统与其根路径。
 type extractorConstructor func(fs.FS, string) Extractor
 
 var (

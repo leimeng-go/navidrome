@@ -11,6 +11,7 @@ import (
 	"github.com/navidrome/navidrome/utils/ioutils"
 )
 
+// fromEmbedded 读取扫描时已存入数据库的内嵌歌词。
 func fromEmbedded(ctx context.Context, mf *model.MediaFile) (model.LyricList, error) {
 	if mf.Lyrics != "" {
 		log.Trace(ctx, "embedded lyrics found in file", "title", mf.Title)
@@ -22,6 +23,9 @@ func fromEmbedded(ctx context.Context, mf *model.MediaFile) (model.LyricList, er
 	return nil, nil
 }
 
+// fromExternalFile 读取与音频同名、指定后缀的外挂歌词文件（如 song.lrc）。
+// 文件不存在属正常情况，返回空而非错误。
+// 语言标记填 "xxx"（ISO 639 的「未指定」），因为外挂文件本身不带语言信息。
 func fromExternalFile(ctx context.Context, mf *model.MediaFile, suffix string) (model.LyricList, error) {
 	basePath := mf.AbsolutePath()
 	ext := path.Ext(basePath)

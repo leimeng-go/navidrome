@@ -27,6 +27,8 @@ import (
 	"github.com/navidrome/navidrome/utils/singleton"
 )
 
+// Insights 是匿名使用统计上报服务，用于帮助项目了解各类配置的实际使用情况。
+// 详见 https://navidrome.org/docs/getting-started/insights
 type Insights interface {
 	Run(ctx context.Context)
 	LastRun(ctx context.Context) (timestamp time.Time, success bool)
@@ -36,6 +38,8 @@ var (
 	insightsID string
 )
 
+// insightsCollector 采集并上报统计数据。
+// lastRun/lastStatus 用原子变量，因为要被后台协程写、被 HTTP 请求读。
 type insightsCollector struct {
 	ds           model.DataStore
 	pluginLoader PluginLoader
@@ -44,10 +48,13 @@ type insightsCollector struct {
 }
 
 // PluginLoader defines an interface for loading plugins
+// PluginLoader 提供已安装插件清单。
 type PluginLoader interface {
 	PluginList() map[string]schema.PluginManifest
 }
 
+// GetInstance 返回统计服务单例。
+// 首次运行时生成一个随机 ID 并持久化，用于在不暴露身份的前提下去重统计。
 func GetInstance(ds model.DataStore, pluginLoader PluginLoader) Insights {
 	return singleton.GetInstance(func() *insightsCollector {
 		id, err := ds.Property(context.TODO()).Get(consts.InsightsIDKey)
@@ -64,6 +71,8 @@ func GetInstance(ds model.DataStore, pluginLoader PluginLoader) Insights {
 	})
 }
 
+// Run 按固定间隔循环上报，直到上下文取消。
+// 每轮都重新获取管理员上下文：首次启动时可能尚未创建管理员用户。
 func (c *insightsCollector) Run(ctx context.Context) {
 	for {
 		// Refresh admin context on each iteration to handle cases where
@@ -84,11 +93,15 @@ func (c *insightsCollector) Run(ctx context.Context) {
 	}
 }
 
+// LastRun 返回最近一次上报的时间与是否成功。
 func (c *insightsCollector) LastRun(context.Context) (timestamp time.Time, success bool) {
 	t := c.lastRun.Load()
 	return time.UnixMilli(t), c.lastStatus.Load()
 }
 
+// sendInsights 采集并 POST 统计数据。
+// 无用户时跳过——尚未完成初始化的实例不具备统计意义。
+// 上报的完整内容会写入日志，便于用户自行核查发送了什么。
 func (c *insightsCollector) sendInsights(ctx context.Context) {
 	count, err := c.ds.User(ctx).CountAll(model.QueryOptions{})
 	if err != nil {
@@ -125,6 +138,7 @@ func (c *insightsCollector) sendInsights(ctx context.Context) {
 	resp.Body.Close()
 }
 
+// buildInfo 读取编译期嵌入的构建信息与 Go 版本。
 func buildInfo() (map[string]string, string) {
 	bInfo := map[string]string{}
 	var version string
@@ -140,6 +154,8 @@ func buildInfo() (map[string]string, string) {
 	return bInfo, version
 }
 
+// getFSInfo 探测指定路径所在文件系统的类型。
+// 仅上报类型（如 ext4/nfs），不上报路径本身，避免泄露隐私。
 func getFSInfo(path string) *insights.FSInfo {
 	var info insights.FSInfo
 
@@ -158,6 +174,8 @@ func getFSInfo(path string) *insights.FSInfo {
 	return &info
 }
 
+// staticData 汇集运行期间不变的信息（版本、系统、文件系统、配置开关），只计算一次。
+// 配置项只上报「是否启用」等布尔或数值，不上报密钥、路径等敏感内容。
 var staticData = sync.OnceValue(func() insights.Data {
 	// Basic info
 	data := insights.Data{
@@ -230,6 +248,9 @@ var staticData = sync.OnceValue(func() insights.Data {
 	return data
 })
 
+// collect 在静态信息基础上补充动态数据（媒体库规模、内存、运行时长），序列化为 JSON。
+// 各项统计失败只记 Trace 日志继续，缺一两项不应导致整次上报失败。
+// 播放器与插件信息受独立开关控制，默认不采集。
 func (c *insightsCollector) collect(ctx context.Context) []byte {
 	data := staticData()
 	data.Uptime = time.Since(consts.ServerStart).Milliseconds() / 1000
@@ -310,6 +331,7 @@ func (c *insightsCollector) collect(ctx context.Context) []byte {
 }
 
 // hasSmartPlaylists checks if there are any smart playlists (playlists with rules)
+// hasSmartPlaylists 判断是否存在智能歌单（带筛选规则的歌单）。
 func (c *insightsCollector) hasSmartPlaylists(ctx context.Context) (bool, error) {
 	count, err := c.ds.Playlist(ctx).CountAll(model.QueryOptions{
 		Filters: squirrel.And{squirrel.NotEq{"rules": ""}, squirrel.NotEq{"rules": nil}},
@@ -318,6 +340,7 @@ func (c *insightsCollector) hasSmartPlaylists(ctx context.Context) (bool, error)
 }
 
 // collectPlugins collects information about installed plugins
+// collectPlugins 收集已安装插件的名称与版本。
 func (c *insightsCollector) collectPlugins(_ context.Context) map[string]insights.PluginInfo {
 	plugins := make(map[string]insights.PluginInfo)
 	for id, manifest := range c.pluginLoader.PluginList() {

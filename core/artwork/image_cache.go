@@ -13,6 +13,8 @@ import (
 	"github.com/navidrome/navidrome/utils/singleton"
 )
 
+// cacheKey 是各封面读取器共用的缓存键基类。
+// 键中含更新时间戳，内容一变键就变，无需显式清理旧缓存。
 type cacheKey struct {
 	artID      model.ArtworkID
 	lastUpdate time.Time
@@ -31,6 +33,8 @@ type imageCache struct {
 	cache.FileCache
 }
 
+// GetImageCache 返回封面图片文件缓存单例，
+// 缓存未命中时回调对应 artworkReader 实际取图。
 func GetImageCache() cache.FileCache {
 	return singleton.GetInstance(func() *imageCache {
 		return &imageCache{

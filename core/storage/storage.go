@@ -10,8 +10,10 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// LocalSchemaID 是本地文件系统的协议标识。
 const LocalSchemaID = "file"
 
+// constructor 是存储实现的构造函数。
 type constructor func(url.URL) Storage
 
 var (
@@ -19,6 +21,7 @@ var (
 	lock     sync.RWMutex
 )
 
+// Register 注册某协议的存储实现，通常在实现包的 init 中调用。
 func Register(schema string, c constructor) {
 	lock.Lock()
 	defer lock.Unlock()
@@ -29,6 +32,11 @@ func Register(schema string, c constructor) {
 // It uses the schema part of the URI to find the correct registered
 // Storage constructor.
 // If the URI does not contain a schema, it is treated as a file:// URI.
+//
+// For 按 URI 协议返回对应的存储实现。
+//
+// 无协议前缀的路径视为本地路径：转为绝对路径后逐段做 URL 转义，
+// 否则含空格或 # 等字符的路径会被 url.Parse 错误解析。
 func For(uri string) (Storage, error) {
 	lock.RLock()
 	defer lock.RUnlock()

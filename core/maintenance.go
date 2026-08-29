@@ -14,18 +14,24 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 )
 
+// Maintenance 提供库维护操作，目前是清理标记为缺失的文件记录。
 type Maintenance interface {
 	// DeleteMissingFiles deletes specific missing files by their IDs
+	// DeleteMissingFiles 按 ID 删除指定的缺失文件记录
 	DeleteMissingFiles(ctx context.Context, ids []string) error
 	// DeleteAllMissingFiles deletes all files marked as missing
+	// DeleteAllMissingFiles 删除全部标记为缺失的文件记录
 	DeleteAllMissingFiles(ctx context.Context) error
 }
 
+// maintenanceService 是 Maintenance 的实现。
+// wg 用于在测试中等待后台统计刷新完成。
 type maintenanceService struct {
 	ds model.DataStore
 	wg sync.WaitGroup
 }
 
+// NewMaintenance 创建维护服务。
 func NewMaintenance(ds model.DataStore) Maintenance {
 	return &maintenanceService{
 		ds: ds,
@@ -41,6 +47,12 @@ func (s *maintenanceService) DeleteAllMissingFiles(ctx context.Context) error {
 }
 
 // deleteMissing handles the deletion of missing files and triggers necessary cleanup operations
+//
+// deleteMissing 删除缺失文件并做后续清理。ids 为空表示删除全部缺失记录。
+//
+// 顺序要点：必须先取出受影响的专辑 ID，删除之后就查不到了。
+// 删除后跑一次 GC 清理孤儿记录（空专辑、空艺术家），
+// 最后异步刷新统计——统计刷新耗时较长，不应阻塞请求。
 func (s *maintenanceService) deleteMissing(ctx context.Context, ids []string) error {
 	// Track affected album IDs before deletion for refresh
 	affectedAlbumIDs, err := s.getAffectedAlbumIDs(ctx, ids)
@@ -76,6 +88,9 @@ func (s *maintenanceService) deleteMissing(ctx context.Context, ids []string) er
 
 // refreshAlbums recalculates album attributes (size, duration, song count, etc.) from media files.
 // It uses batch queries to minimize database round-trips for efficiency.
+//
+// refreshAlbums 依据现存曲目重算专辑的大小、时长、曲目数等聚合属性。
+// 按 100 个一批处理，避免 SQL 的 IN 子句过长触发参数数量限制。
 func (s *maintenanceService) refreshAlbums(ctx context.Context, albumIDs []string) error {
 	if len(albumIDs) == 0 {
 		return nil
@@ -96,6 +111,13 @@ func (s *maintenanceService) refreshAlbums(ctx context.Context, albumIDs []strin
 }
 
 // refreshAlbumChunk processes a single chunk of album IDs
+//
+// refreshAlbumChunk 处理一批专辑：两次批量查询取回专辑与曲目，在内存中分组重算。
+//
+// 只有内容真正变化时才写库，避免无谓的 UPDATE 与 UpdatedAt 抖动。
+// CreatedAt 需从旧记录继承，因为重算出的专辑是全新对象。
+// 已无曲目的专辑跳过，交由 GC 删除。
+// 单个专辑写入失败只记日志继续，不因一张专辑中断整批。
 func (s *maintenanceService) refreshAlbumChunk(ctx context.Context, albumIDs []string) error {
 	albumRepo := s.ds.Album(ctx)
 	mfRepo := s.ds.MediaFile(ctx)
@@ -161,6 +183,9 @@ func (s *maintenanceService) refreshAlbumChunk(ctx context.Context, albumIDs []s
 }
 
 // getAffectedAlbumIDs returns distinct album IDs from missing media files
+//
+// getAffectedAlbumIDs 取出即将被删除的缺失文件所属的专辑 ID（去重）。
+// 必须在删除前调用。
 func (s *maintenanceService) getAffectedAlbumIDs(ctx context.Context, ids []string) ([]string, error) {
 	var filters squirrel.Sqlizer = squirrel.Eq{"missing": true}
 	if len(ids) > 0 {
@@ -194,6 +219,10 @@ func (s *maintenanceService) getAffectedAlbumIDs(ctx context.Context, ids []stri
 }
 
 // refreshStatsAsync refreshes artist and album statistics in background goroutines
+//
+// refreshStatsAsync 在后台协程中刷新艺术家与专辑统计。
+// 使用 background 上下文并携带请求值：请求结束后统计仍需继续，
+// 但日志中要保留用户等上下文信息。
 func (s *maintenanceService) refreshStatsAsync(ctx context.Context, affectedAlbumIDs []string) {
 	// Refresh artist stats in background
 	s.wg.Add(1)
@@ -221,6 +250,8 @@ func (s *maintenanceService) refreshStatsAsync(ctx context.Context, affectedAlbu
 // WARNING: This method is ONLY for testing. Never call this in production code.
 // Calling Wait() in production will block until ALL background operations complete
 // and may cause race conditions with new operations starting.
+//
+// wait 等待所有后台协程结束。仅供测试使用，生产代码不得调用。
 func (s *maintenanceService) wait() {
 	s.wg.Wait()
 }

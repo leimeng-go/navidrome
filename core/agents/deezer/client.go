@@ -23,16 +23,20 @@ var (
 	ErrNotFound = errors.New("deezer: not found")
 )
 
+// httpDoer 抽象 HTTP 执行，便于注入缓存客户端与测试替身。
 type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// client 是 Deezer API 客户端。
+// 简介接口走另一套 GraphQL 服务，需要额外的 JWT，故此处缓存 token。
 type client struct {
 	httpDoer httpDoer
 	language string
 	jwt      jwtToken
 }
 
+// newClient 创建客户端，language 决定简介返回的语种。
 func newClient(hc httpDoer, language string) *client {
 	return &client{
 		httpDoer: hc,
@@ -40,6 +44,7 @@ func newClient(hc httpDoer, language string) *client {
 	}
 }
 
+// searchArtists 按名称搜索艺人，按热度排序。
 func (c *client) searchArtists(ctx context.Context, name string, limit int) ([]Artist, error) {
 	params := url.Values{}
 	params.Add("q", name)
@@ -63,6 +68,7 @@ func (c *client) searchArtists(ctx context.Context, name string, limit int) ([]A
 	return results.Data, nil
 }
 
+// makeRequest 发起请求并解析 JSON 响应。
 func (c *client) makeRequest(req *http.Request, response any) error {
 	log.Trace(req.Context(), fmt.Sprintf("Sending Deezer %s request", req.Method), "url", req.URL)
 	resp, err := c.httpDoer.Do(req)
@@ -83,6 +89,7 @@ func (c *client) makeRequest(req *http.Request, response any) error {
 	return json.Unmarshal(data, response)
 }
 
+// parseError 解析 Deezer 的错误响应体。
 func (c *client) parseError(data []byte) error {
 	var deezerError Error
 	err := json.Unmarshal(data, &deezerError)
@@ -92,6 +99,7 @@ func (c *client) parseError(data []byte) error {
 	return fmt.Errorf("deezer error(%d): %s", deezerError.Error.Code, deezerError.Error.Message)
 }
 
+// getRelatedArtists 获取相关艺人。
 func (c *client) getRelatedArtists(ctx context.Context, artistID int) ([]Artist, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/artist/%d/related", apiBaseURL, artistID), nil)
 	if err != nil {
@@ -107,6 +115,7 @@ func (c *client) getRelatedArtists(ctx context.Context, artistID int) ([]Artist,
 	return results.Data, nil
 }
 
+// getTopTracks 获取艺人热门曲目。
 func (c *client) getTopTracks(ctx context.Context, artistID int, limit int) ([]Track, error) {
 	params := url.Values{}
 	params.Add("limit", strconv.Itoa(limit))
@@ -127,8 +136,12 @@ func (c *client) getTopTracks(ctx context.Context, artistID int, limit int) ([]T
 
 const pipeAPIURL = "https://pipe.deezer.com/api"
 
+// strictPolicy 用于剥离简介中的全部 HTML 标签，防止 XSS。
 var strictPolicy = bluemonday.StrictPolicy()
 
+// getArtistBio 获取艺人简介。
+// 公开 REST API 不提供简介，只能改用 Deezer 内部的 GraphQL 接口，
+// 该接口需要 Bearer JWT 鉴权，并通过 Accept-Language 指定语种。
 func (c *client) getArtistBio(ctx context.Context, artistID int) (string, error) {
 	jwt, err := c.getJWT(ctx)
 	if err != nil {
@@ -213,6 +226,8 @@ func (c *client) getArtistBio(ctx context.Context, artistID int) (string, error)
 	return cleanBio(result.Data.Artist.Bio.Full), nil
 }
 
+// cleanBio 清洗简介文本。
+// 先把段落结束标签换成换行以保留分段，再彻底剥离剩余 HTML。
 func cleanBio(bio string) string {
 	bio = strings.ReplaceAll(bio, "</p>", "\n")
 	return strictPolicy.Sanitize(bio)

@@ -22,6 +22,9 @@ type PluginLoader interface {
 	LoadMediaAgent(name string) (Interface, bool)
 }
 
+// Agents 是所有元数据代理的聚合器，本身也实现 Interface。
+// 它按配置顺序依次询问各代理，返回首个成功的结果，
+// 因而对调用方而言就是一个「超级代理」。
 type Agents struct {
 	ds           model.DataStore
 	pluginLoader PluginLoader
@@ -43,6 +46,7 @@ func createAgents(ds model.DataStore, pluginLoader PluginLoader) *Agents {
 }
 
 // enabledAgent represents an enabled agent with its type information
+// enabledAgent 表示一个已启用的代理及其来源（内置或插件）。
 type enabledAgent struct {
 	name     string
 	isPlugin bool
@@ -53,6 +57,11 @@ type enabledAgent struct {
 // 2. Always include LocalAgentName
 // 3. If config is empty, include ONLY LocalAgentName
 // Each enabledAgent contains the name and whether it's a plugin (true) or built-in (false)
+//
+// getEnabledAgentNames 按配置顺序返回启用的代理列表，顺序即优先级。
+// 本地代理始终参与，作为外部代理全部失败时的兜底；
+// 配置为空则只用本地代理（不主动访问外网）。
+// 每次调用都重新计算，以便配置或插件热更新后立即生效。
 func (a *Agents) getEnabledAgentNames() []enabledAgent {
 	// If no agents configured, ONLY use the local agent
 	if conf.Server.Agents == "" {
@@ -93,6 +102,8 @@ func (a *Agents) getEnabledAgentNames() []enabledAgent {
 	return validAgents
 }
 
+// getAgent 按需实例化代理，取不到时返回 nil 由调用方跳过。
+// 内置代理缺少必要配置（如 API Key）时构造函数会返回 nil。
 func (a *Agents) getAgent(ea enabledAgent) Interface {
 	if ea.isPlugin {
 		// Try to load WASM plugin agent (if plugin loader is available)
@@ -121,6 +132,12 @@ func (a *Agents) AgentName() string {
 	return "agents"
 }
 
+// GetArtistMBID 依次询问各代理获取艺术家的 MusicBrainz ID。
+//
+// 以下各查询方法遵循同一套模式：
+// 「未知艺术家」返回 ErrNotFound；「群星」返回空值而非错误（它并非真实艺术家，不必外查）；
+// 遍历中检查上下文取消，避免请求超时后仍继续访问外部服务；
+// 代理未实现对应能力接口则跳过；首个成功结果即返回。
 func (a *Agents) GetArtistMBID(ctx context.Context, id string, name string) (string, error) {
 	switch id {
 	case consts.UnknownArtistID:
@@ -150,6 +167,7 @@ func (a *Agents) GetArtistMBID(ctx context.Context, id string, name string) (str
 	return "", ErrNotFound
 }
 
+// GetArtistURL 获取艺术家的外部主页链接。
 func (a *Agents) GetArtistURL(ctx context.Context, id, name, mbid string) (string, error) {
 	switch id {
 	case consts.UnknownArtistID:
@@ -179,6 +197,9 @@ func (a *Agents) GetArtistURL(ctx context.Context, id, name, mbid string) (strin
 	return "", ErrNotFound
 }
 
+// GetArtistBiography 获取艺术家简介。
+// 注意：此处只要 err 为 nil 即返回，空简介也算有效结果——
+// 代表该代理确实查到了这位艺术家，只是没有简介。
 func (a *Agents) GetArtistBiography(ctx context.Context, id, name, mbid string) (string, error) {
 	switch id {
 	case consts.UnknownArtistID:
@@ -210,6 +231,10 @@ func (a *Agents) GetArtistBiography(ctx context.Context, id, name, mbid string) 
 
 // GetSimilarArtists returns similar artists by id, name, and/or mbid. Because some artists returned from an enabled
 // agent may not exist in the database, return at most limit * conf.Server.DevExternalArtistFetchMultiplier items.
+//
+// GetSimilarArtists 获取相似艺术家。
+// 实际请求数量按倍率放大：外部返回的艺术家未必都存在于本地库中，
+// 多取一些才能在过滤后凑够 limit 条。
 func (a *Agents) GetSimilarArtists(ctx context.Context, id, name, mbid string, limit int) ([]Artist, error) {
 	switch id {
 	case consts.UnknownArtistID:
@@ -246,6 +271,7 @@ func (a *Agents) GetSimilarArtists(ctx context.Context, id, name, mbid string, l
 	return nil, ErrNotFound
 }
 
+// GetArtistImages 获取艺术家图片列表。
 func (a *Agents) GetArtistImages(ctx context.Context, id, name, mbid string) ([]ExternalImage, error) {
 	switch id {
 	case consts.UnknownArtistID:
@@ -277,6 +303,8 @@ func (a *Agents) GetArtistImages(ctx context.Context, id, name, mbid string) ([]
 
 // GetArtistTopSongs returns top songs by id, name, and/or mbid. Because some songs returned from an enabled
 // agent may not exist in the database, return at most limit * conf.Server.DevExternalArtistFetchMultiplier items.
+//
+// GetArtistTopSongs 获取艺术家热门单曲，同样按倍率超量请求以便过滤后仍够数。
 func (a *Agents) GetArtistTopSongs(ctx context.Context, id, artistName, mbid string, count int) ([]Song, error) {
 	switch id {
 	case consts.UnknownArtistID:
@@ -309,6 +337,7 @@ func (a *Agents) GetArtistTopSongs(ctx context.Context, id, artistName, mbid str
 	return nil, ErrNotFound
 }
 
+// GetAlbumInfo 获取专辑信息（简介、外部链接等）。
 func (a *Agents) GetAlbumInfo(ctx context.Context, name, artist, mbid string) (*AlbumInfo, error) {
 	if name == consts.UnknownAlbum {
 		return nil, ErrNotFound
@@ -336,6 +365,7 @@ func (a *Agents) GetAlbumInfo(ctx context.Context, name, artist, mbid string) (*
 	return nil, ErrNotFound
 }
 
+// GetAlbumImages 获取专辑封面图片列表。
 func (a *Agents) GetAlbumImages(ctx context.Context, name, artist, mbid string) ([]ExternalImage, error) {
 	if name == consts.UnknownAlbum {
 		return nil, ErrNotFound

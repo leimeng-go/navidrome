@@ -27,12 +27,17 @@ import (
 )
 
 const (
-	maxSimilarArtists  = 100
-	refreshDelay       = 5 * time.Second
-	refreshTimeout     = 15 * time.Second
+	// maxSimilarArtists 是入库保存的相似艺术家上限
+	maxSimilarArtists = 100
+	// refreshDelay 是后台刷新两次请求之间的间隔，用于给外部服务限速
+	refreshDelay = 5 * time.Second
+	// refreshTimeout 是单次后台刷新的超时时间
+	refreshTimeout = 15 * time.Second
+	// refreshQueueLength 是后台刷新队列容量，满了就丢弃新请求
 	refreshQueueLength = 2000
 )
 
+// Provider 是外部元数据的统一入口，负责调用代理、缓存结果并与本地库匹配。
 type Provider interface {
 	UpdateAlbumInfo(ctx context.Context, id string) (*model.Album, error)
 	UpdateArtistInfo(ctx context.Context, id string, count int, includeNotPresent bool) (*model.Artist, error)
@@ -42,6 +47,7 @@ type Provider interface {
 	AlbumImage(ctx context.Context, id string) (*url.URL, error)
 }
 
+// provider 是 Provider 的实现，内含两个后台刷新队列用于异步更新过期信息。
 type provider struct {
 	ds          model.DataStore
 	ag          Agents
@@ -49,12 +55,16 @@ type provider struct {
 	albumQueue  refreshQueue[auxAlbum]
 }
 
+// auxAlbum 包装 model.Album，覆写 Name 以适配外部 API 调用。
 type auxAlbum struct {
 	model.Album
 }
 
 // Name returns the appropriate album name for external API calls
 // based on the DevPreserveUnicodeInExternalCalls configuration option
+//
+// Name 返回用于外部查询的专辑名。
+// 默认清洗掉特殊 Unicode 字符——外部服务往往无法匹配带特殊符号的名称。
 func (a *auxAlbum) Name() string {
 	if conf.Server.DevPreserveUnicodeInExternalCalls {
 		return a.Album.Name
@@ -62,12 +72,15 @@ func (a *auxAlbum) Name() string {
 	return str.Clear(a.Album.Name)
 }
 
+// auxArtist 包装 model.Artist，覆写 Name 以适配外部 API 调用。
 type auxArtist struct {
 	model.Artist
 }
 
 // Name returns the appropriate artist name for external API calls
 // based on the DevPreserveUnicodeInExternalCalls configuration option
+//
+// Name 返回用于外部查询的艺术家名，规则同 auxAlbum.Name。
 func (a *auxArtist) Name() string {
 	if conf.Server.DevPreserveUnicodeInExternalCalls {
 		return a.Artist.Name
@@ -75,6 +88,7 @@ func (a *auxArtist) Name() string {
 	return str.Clear(a.Artist.Name)
 }
 
+// Agents 汇总 provider 所需的全部代理能力。
 type Agents interface {
 	agents.AlbumInfoRetriever
 	agents.AlbumImageRetriever
@@ -86,6 +100,7 @@ type Agents interface {
 	agents.ArtistURLRetriever
 }
 
+// NewProvider 创建外部元数据服务，并启动两个后台刷新队列。
 func NewProvider(ds model.DataStore, agents Agents) Provider {
 	e := &provider{ds: ds, ag: agents}
 	e.artistQueue = newRefreshQueue(context.TODO(), e.populateArtistInfo)
@@ -93,6 +108,7 @@ func NewProvider(ds model.DataStore, agents Agents) Provider {
 	return e
 }
 
+// getAlbum 按 ID 取专辑，传入曲目 ID 时自动上溯到其所属专辑。
 func (e *provider) getAlbum(ctx context.Context, id string) (auxAlbum, error) {
 	var entity interface{}
 	entity, err := model.GetEntityByID(ctx, e.ds, id)
@@ -113,6 +129,11 @@ func (e *provider) getAlbum(ctx context.Context, id string) (auxAlbum, error) {
 	return album, nil
 }
 
+// UpdateAlbumInfo 返回专辑的外部信息。
+//
+// 首次访问同步拉取（否则用户会看到空白）；
+// 已有但过期时先返回旧数据，再入队后台刷新——
+// 陈旧数据也远好过让用户干等外部服务响应。
 func (e *provider) UpdateAlbumInfo(ctx context.Context, id string) (*model.Album, error) {
 	album, err := e.getAlbum(ctx, id)
 	if err != nil {
@@ -139,6 +160,9 @@ func (e *provider) UpdateAlbumInfo(ctx context.Context, id string) (*model.Album
 	return &album.Album, nil
 }
 
+// populateAlbumInfo 拉取专辑外部信息并落库。
+// 图片按尺寸降序取前三张，分别作为大/中/小图。
+// 代理返回「未找到」不算错误：说明外部确实没有这张专辑。
 func (e *provider) populateAlbumInfo(ctx context.Context, album auxAlbum) (auxAlbum, error) {
 	start := time.Now()
 	albumName := album.Name()
@@ -187,6 +211,7 @@ func (e *provider) populateAlbumInfo(ctx context.Context, album auxAlbum) (auxAl
 	return album, nil
 }
 
+// getArtist 按 ID 取艺术家，传入曲目或专辑 ID 时自动上溯。
 func (e *provider) getArtist(ctx context.Context, id string) (auxArtist, error) {
 	var entity interface{}
 	entity, err := model.GetEntityByID(ctx, e.ds, id)
@@ -208,6 +233,7 @@ func (e *provider) getArtist(ctx context.Context, id string) (auxArtist, error) 
 	return artist, nil
 }
 
+// UpdateArtistInfo 返回艺术家外部信息，并按需加载相似艺术家。
 func (e *provider) UpdateArtistInfo(ctx context.Context, id string, similarCount int, includeNotPresent bool) (*model.Artist, error) {
 	artist, err := e.refreshArtistInfo(ctx, id)
 	if err != nil {
@@ -218,6 +244,8 @@ func (e *provider) UpdateArtistInfo(ctx context.Context, id string, similarCount
 	return &artist.Artist, err
 }
 
+// refreshArtistInfo 取艺术家信息，缓存策略同 UpdateAlbumInfo：
+// 无数据同步拉取，过期则后台异步刷新。
 func (e *provider) refreshArtistInfo(ctx context.Context, id string) (auxArtist, error) {
 	artist, err := e.getArtist(ctx, id)
 	if err != nil {
@@ -243,6 +271,11 @@ func (e *provider) refreshArtistInfo(ctx context.Context, id string) (auxArtist,
 	return artist, nil
 }
 
+// populateArtistInfo 并发拉取艺术家的图片、简介、链接与相似艺术家。
+//
+// 先补 MBID：后续各项查询有了 MBID 才能精确匹配，避免同名艺术家混淆。
+// 四项查询并发但限流 2 路，防止对同一外部服务并发过高触发限流。
+// 各子任务一律返回 nil：单项失败不应影响其余项落库。
 func (e *provider) populateArtistInfo(ctx context.Context, artist auxArtist) (auxArtist, error) {
 	start := time.Now()
 	// Get MBID first, if it is not yet available
@@ -279,6 +312,11 @@ func (e *provider) populateArtistInfo(ctx context.Context, artist auxArtist) (au
 	return artist, nil
 }
 
+// ArtistRadio 生成「艺术家电台」：以该艺术家及其相似艺术家的热门曲目组成随机歌单。
+//
+// 用加权随机而非纯随机，使结果既有倾向性又不完全固定：
+// 本尊权重高于相似艺术家（+10），同一艺术家内按热度递减（每首减 4）。
+// 因是带权重的有放回抽取，可能重复抽到同一首。
 func (e *provider) ArtistRadio(ctx context.Context, id string, count int) (model.MediaFiles, error) {
 	artist, err := e.getArtist(ctx, id)
 	if err != nil {
@@ -337,6 +375,7 @@ func (e *provider) ArtistRadio(ctx context.Context, id string, count int) (model
 	return similarSongs, nil
 }
 
+// ArtistImage 返回艺术家图片链接（优先大图）。
 func (e *provider) ArtistImage(ctx context.Context, id string) (*url.URL, error) {
 	artist, err := e.getArtist(ctx, id)
 	if err != nil {
@@ -356,6 +395,8 @@ func (e *provider) ArtistImage(ctx context.Context, id string) (*url.URL, error)
 	return url.Parse(imageUrl)
 }
 
+// AlbumImage 返回专辑封面链接，取尺寸最大的一张。
+// 错误按类型分级记录：未找到属正常，取消不告警，其余才是真异常。
 func (e *provider) AlbumImage(ctx context.Context, id string) (*url.URL, error) {
 	album, err := e.getAlbum(ctx, id)
 	if err != nil {
@@ -395,6 +436,8 @@ func (e *provider) AlbumImage(ctx context.Context, id string) (*url.URL, error) 
 	return url.Parse(img.URL)
 }
 
+// TopSongs 按艺术家名查询其热门单曲（仅返回本地库中存在的）。
+// 找不到艺术家时返回空而非错误——这属于正常的「无结果」。
 func (e *provider) TopSongs(ctx context.Context, artistName string, count int) (model.MediaFiles, error) {
 	artist, err := e.findArtistByName(ctx, artistName)
 	if err != nil {
@@ -419,6 +462,10 @@ func (e *provider) TopSongs(ctx context.Context, artistName string, count int) (
 	return songs, nil
 }
 
+// getMatchingTopSongs 把外部返回的热门单曲匹配到本地库中的曲目。
+//
+// 两级匹配：MBID 精确匹配优先（可靠），标题匹配兜底（外部常无 MBID）。
+// 两次批量查询而非逐首查，避免 N 次数据库往返。
 func (e *provider) getMatchingTopSongs(ctx context.Context, agent agents.ArtistTopSongsRetriever, artist *auxArtist, count int) (model.MediaFiles, error) {
 	artistName := artist.Name()
 	songs, err := agent.GetArtistTopSongs(ctx, artist.ID, artistName, artist.MbzArtistID, count)
@@ -447,6 +494,8 @@ func (e *provider) getMatchingTopSongs(ctx context.Context, agent agents.ArtistT
 	return mfs, nil
 }
 
+// loadTracksByMBID 按 MBID 批量匹配本地曲目，返回 MBID 到曲目的映射。
+// 同一 MBID 有多条时只留第一条（同一录音的不同副本）。
 func (e *provider) loadTracksByMBID(ctx context.Context, songs []agents.Song) (map[string]model.MediaFile, error) {
 	var mbids []string
 	for _, s := range songs {
@@ -477,6 +526,10 @@ func (e *provider) loadTracksByMBID(ctx context.Context, songs []agents.Song) (m
 	return matches, nil
 }
 
+// loadTracksByTitle 按标题匹配本地曲目，跳过已由 MBID 命中的。
+//
+// 标题经排序归一化后比对，消除大小写、冠词、标点的差异。
+// 结果按收藏、评分、年份、非合辑排序，使同名曲目优先选中更「正统」的版本。
 func (e *provider) loadTracksByTitle(ctx context.Context, songs []agents.Song, artist *auxArtist, mbidMatches map[string]model.MediaFile) (map[string]model.MediaFile, error) {
 	titleMap := map[string]string{}
 	for _, s := range songs {
@@ -518,6 +571,7 @@ func (e *provider) loadTracksByTitle(ctx context.Context, songs []agents.Song, a
 	return matches, nil
 }
 
+// selectTopSongs 按外部返回的热度顺序回填本地曲目，优先用 MBID 匹配结果。
 func (e *provider) selectTopSongs(songs []agents.Song, byMBID, byTitle map[string]model.MediaFile, count int) model.MediaFiles {
 	var mfs model.MediaFiles
 	for _, t := range songs {
@@ -537,6 +591,7 @@ func (e *provider) selectTopSongs(songs []agents.Song, byMBID, byTitle map[strin
 	return mfs
 }
 
+// callGetURL 取艺术家外部主页链接，失败静默跳过。
 func (e *provider) callGetURL(ctx context.Context, agent agents.ArtistURLRetriever, artist *auxArtist) {
 	artisURL, err := agent.GetArtistURL(ctx, artist.ID, artist.Name(), artist.MbzArtistID)
 	if err != nil {
@@ -545,6 +600,9 @@ func (e *provider) callGetURL(ctx context.Context, agent agents.ArtistURLRetriev
 	artist.ExternalUrl = artisURL
 }
 
+// callGetBiography 取艺术家简介并清洗：
+// 过滤危险 HTML、去掉换行（前端单段展示），
+// 并给链接补上 target='_blank'，避免点击后跳离应用。
 func (e *provider) callGetBiography(ctx context.Context, agent agents.ArtistBiographyRetriever, artist *auxArtist) {
 	bio, err := agent.GetArtistBiography(ctx, artist.ID, artist.Name(), artist.MbzArtistID)
 	if err != nil {
@@ -555,6 +613,7 @@ func (e *provider) callGetBiography(ctx context.Context, agent agents.ArtistBiog
 	artist.Biography = strings.ReplaceAll(bio, "<a ", "<a target='_blank' ")
 }
 
+// callGetImage 取艺术家图片，按尺寸降序分配为大/中/小图。
 func (e *provider) callGetImage(ctx context.Context, agent agents.ArtistImageRetriever, artist *auxArtist) {
 	images, err := agent.GetArtistImages(ctx, artist.ID, artist.Name(), artist.MbzArtistID)
 	if err != nil {
@@ -573,6 +632,7 @@ func (e *provider) callGetImage(ctx context.Context, agent agents.ArtistImageRet
 	}
 }
 
+// callGetSimilar 取相似艺术家并映射到本地库。
 func (e *provider) callGetSimilar(ctx context.Context, agent agents.ArtistSimilarRetriever, artist *auxArtist,
 	limit int, includeNotPresent bool) {
 	artistName := artist.Name()
@@ -589,6 +649,11 @@ func (e *provider) callGetSimilar(ctx context.Context, agent agents.ArtistSimila
 	artist.SimilarArtists = sa
 }
 
+// mapSimilarArtists 把外部返回的艺术家名匹配到本地库。
+//
+// 一次批量查询后在内存中比对，避免逐个查库。
+// 本地存在的优先填充；配额未满且允许时，再补上仅有名字的「不在库中」条目
+// （前端可展示但不可点击）。
 func (e *provider) mapSimilarArtists(ctx context.Context, similar []agents.Artist, limit int, includeNotPresent bool) (model.Artists, error) {
 	var result model.Artists
 	var notPresent []string
@@ -645,6 +710,7 @@ func (e *provider) mapSimilarArtists(ctx context.Context, similar []agents.Artis
 	return result, nil
 }
 
+// findArtistByName 按名称模糊查询本地艺术家，只取第一条。
 func (e *provider) findArtistByName(ctx context.Context, artistName string) (*auxArtist, error) {
 	artists, err := e.ds.Artist(ctx).GetAll(model.QueryOptions{
 		Filters: squirrel.Like{"artist.name": artistName},
@@ -659,6 +725,8 @@ func (e *provider) findArtistByName(ctx context.Context, artistName string) (*au
 	return &auxArtist{Artist: artists[0]}, nil
 }
 
+// loadSimilar 从数据库补全相似艺术家的完整信息（图片、统计等）。
+// 借助 map 查表但按原数组顺序遍历，以保留外部返回的相似度排序。
 func (e *provider) loadSimilar(ctx context.Context, artist *auxArtist, count int, includeNotPresent bool) error {
 	var ids []string
 	for _, sa := range artist.SimilarArtists {
@@ -701,8 +769,14 @@ func (e *provider) loadSimilar(ctx context.Context, artist *auxArtist, count int
 	return nil
 }
 
+// refreshQueue 是后台刷新队列，只暴露写入端。
 type refreshQueue[T any] chan<- *T
 
+// newRefreshQueue 创建刷新队列并启动消费协程。
+//
+// 每处理一项前先等 refreshDelay，起到全局限速作用——
+// 大批量刷新时不至于把外部服务打挂。
+// 单项限时 refreshTimeout，防止慢请求阻塞整个队列。
 func newRefreshQueue[T any](ctx context.Context, processFn func(context.Context, T) (T, error)) refreshQueue[T] {
 	queue := make(chan *T, refreshQueueLength)
 	go func() {
@@ -725,6 +799,8 @@ func newRefreshQueue[T any](ctx context.Context, processFn func(context.Context,
 	return queue
 }
 
+// enqueue 入队刷新请求。队列已满时直接丢弃：
+// 刷新只是尽力而为的优化，漏掉一次无伤大雅，绝不能阻塞调用方。
 func (q *refreshQueue[T]) enqueue(item *T) {
 	select {
 	case *q <- item:

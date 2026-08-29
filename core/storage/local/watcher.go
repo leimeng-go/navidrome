@@ -13,6 +13,13 @@ import (
 // Start starts a watcher on the whole FS and returns a channel to send detected changes.
 // It uses `notify` to detect changes in the filesystem, so it may not work on all platforms/use-cases.
 // Notoriously, it does not work on some networked mounts and Windows with WSL2.
+//
+// Start 启动文件系统监听，返回变更路径的通道。
+//
+// 用原子标志防止重复启动。
+// started 通道用于等待监听真正就绪后再返回，
+// 否则调用方可能错过启动瞬间发生的变更。
+// 上报路径需把软链接真实路径换算回配置路径，使调用方看到的路径始终一致。
 func (s *localStorage) Start(ctx context.Context) (<-chan string, error) {
 	if !s.watching.CompareAndSwap(false, true) {
 		return nil, errors.New("watcher already started")

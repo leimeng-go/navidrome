@@ -9,6 +9,9 @@ import (
 	"github.com/navidrome/navidrome/model"
 )
 
+// GetLyrics 按 LyricsPriority 配置依次尝试各来源，返回首个非空结果。
+// 配置项为 "embedded"（内嵌歌词）或以点开头的扩展名（如 ".lrc" 外挂文件）。
+// 单个来源出错只记日志继续尝试下一个。
 func GetLyrics(ctx context.Context, mf *model.MediaFile) (model.LyricList, error) {
 	var lyricsList model.LyricList
 	var err error

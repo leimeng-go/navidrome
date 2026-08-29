@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// Metrics 是 Prometheus 指标采集接口。
 type Metrics interface {
 	WriteInitialMetrics(ctx context.Context)
 	WriteAfterScanMetrics(ctx context.Context, success bool)
@@ -29,6 +30,8 @@ type metrics struct {
 	ds model.DataStore
 }
 
+// GetPrometheusInstance 返回指标实例。
+// 未启用 Prometheus 时返回空实现，让调用方无需到处判断开关。
 func GetPrometheusInstance(ds model.DataStore) Metrics {
 	if !conf.Server.Prometheus.Enabled {
 		return noopMetrics{}
@@ -39,15 +42,18 @@ func GetPrometheusInstance(ds model.DataStore) Metrics {
 	})
 }
 
+// NewNoopInstance 返回不做任何采集的空实现（用于测试或禁用场景）。
 func NewNoopInstance() Metrics {
 	return noopMetrics{}
 }
 
+// WriteInitialMetrics 在启动时写入版本信息与数据库统计。
 func (m *metrics) WriteInitialMetrics(ctx context.Context) {
 	getPrometheusMetrics().versionInfo.With(prometheus.Labels{"version": consts.Version}).Set(1)
 	processSqlAggregateMetrics(ctx, m.ds, getPrometheusMetrics().dbTotal)
 }
 
+// WriteAfterScanMetrics 在扫描结束后刷新统计，并记录本次扫描的时间与成败。
 func (m *metrics) WriteAfterScanMetrics(ctx context.Context, success bool) {
 	processSqlAggregateMetrics(ctx, m.ds, getPrometheusMetrics().dbTotal)
 
@@ -56,6 +62,8 @@ func (m *metrics) WriteAfterScanMetrics(ctx context.Context, success bool) {
 	getPrometheusMetrics().mediaScansCounter.With(scanLabels).Inc()
 }
 
+// RecordRequest 记录一次 HTTP 请求的计数与耗时。
+// 耗时指标不带 status 标签，避免标签基数过大。
 func (m *metrics) RecordRequest(_ context.Context, endpoint, method, client string, status int32, elapsed int64) {
 	httpLabel := prometheus.Labels{
 		"endpoint": endpoint,
@@ -73,6 +81,7 @@ func (m *metrics) RecordRequest(_ context.Context, endpoint, method, client stri
 	getPrometheusMetrics().httpRequestDuration.With(httpLatencyLabel).Observe(float64(elapsed))
 }
 
+// RecordPluginRequest 记录一次插件调用的计数与耗时。
 func (m *metrics) RecordPluginRequest(_ context.Context, plugin, method string, ok bool, elapsed int64) {
 	pluginLabel := prometheus.Labels{
 		"plugin": plugin,
@@ -88,6 +97,7 @@ func (m *metrics) RecordPluginRequest(_ context.Context, plugin, method string, 
 	getPrometheusMetrics().pluginRequestDuration.With(pluginLatencyLabel).Observe(float64(elapsed))
 }
 
+// GetHandler 返回 /metrics 的 HTTP 处理器，配置了密码则加上 Basic Auth 保护。
 func (m *metrics) GetHandler() http.Handler {
 	r := chi.NewRouter()
 
@@ -106,6 +116,7 @@ func (m *metrics) GetHandler() http.Handler {
 	return r
 }
 
+// prometheusMetrics 汇集所有指标收集器。
 type prometheusMetrics struct {
 	dbTotal               *prometheus.GaugeVec
 	versionInfo           *prometheus.GaugeVec
@@ -118,6 +129,9 @@ type prometheusMetrics struct {
 }
 
 // Prometheus' metrics requires initialization. But not more than once
+//
+// getPrometheusMetrics 惰性创建并注册所有指标。
+// 用 OnceValue 保证只注册一次——重复注册会 panic。
 var getPrometheusMetrics = sync.OnceValue(func() *prometheusMetrics {
 	quartilesToEstimate := map[float64]float64{0.5: 0.05, 0.75: 0.025, 0.9: 0.01, 0.99: 0.001}
 
@@ -196,6 +210,8 @@ var getPrometheusMetrics = sync.OnceValue(func() *prometheusMetrics {
 	return instance
 })
 
+// processSqlAggregateMetrics 统计各模型的记录总数写入 Gauge。
+// 任一统计失败即返回：指标缺失好过写入不完整的数据。
 func processSqlAggregateMetrics(ctx context.Context, ds model.DataStore, targetGauge *prometheus.GaugeVec) {
 	albumsCount, err := ds.Album(ctx).CountAll()
 	if err != nil {
@@ -226,6 +242,7 @@ func processSqlAggregateMetrics(ctx context.Context, ds model.DataStore, targetG
 	targetGauge.With(prometheus.Labels{"model": "user"}).Set(float64(usersCount))
 }
 
+// noopMetrics 是 Prometheus 关闭时使用的空实现。
 type noopMetrics struct {
 }
 

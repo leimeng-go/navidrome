@@ -24,6 +24,9 @@ import (
 	"github.com/navidrome/navidrome/resources"
 )
 
+// selectImageReader 按给定顺序依次尝试各封面来源，返回首个成功的。
+// 顺序即优先级，由各 reader 决定。每步都检查上下文取消，
+// 避免请求已断开还继续访问外部服务。
 func selectImageReader(ctx context.Context, artID model.ArtworkID, extractFuncs ...sourceFunc) (io.ReadCloser, string, error) {
 	for _, f := range extractFuncs {
 		if ctx.Err() != nil {
@@ -41,8 +44,10 @@ func selectImageReader(ctx context.Context, artID model.ArtworkID, extractFuncs 
 	return nil, "", fmt.Errorf("could not get `%s` cover art for %s: %w", artID.Kind, artID, ErrUnavailable)
 }
 
+// sourceFunc 是一个封面来源，返回图片流与其来源路径。
 type sourceFunc func() (r io.ReadCloser, path string, err error)
 
+// String 通过反射取出函数名，使日志能显示实际命中的来源，便于排查。
 func (f sourceFunc) String() string {
 	name := runtime.FuncForPC(reflect.ValueOf(f).Pointer()).Name()
 	name = strings.TrimPrefix(name, "github.com/navidrome/navidrome/core/artwork.")
@@ -53,6 +58,8 @@ func (f sourceFunc) String() string {
 	return name
 }
 
+// fromExternalFile 从目录中挑选匹配通配符的图片文件（如 cover.jpg、folder.png）。
+// 匹配时统一转小写，兼容各种大小写写法。
 func fromExternalFile(ctx context.Context, files []string, pattern string) sourceFunc {
 	return func() (io.ReadCloser, string, error) {
 		for _, file := range files {
@@ -77,12 +84,17 @@ func fromExternalFile(ctx context.Context, files []string, pattern string) sourc
 }
 
 // These regexes are used to match the picture type in the file, in the order they are listed.
+// 用于识别内嵌图片类型的正则，按优先级排列：
+// 先找「封面正面」，再找「正面」，最后找任意「封面」。
 var picTypeRegexes = []*regexp.Regexp{
 	regexp.MustCompile(`(?i).*cover.*front.*|.*front.*cover.*`),
 	regexp.MustCompile(`(?i).*front.*`),
 	regexp.MustCompile(`(?i).*cover.*`),
 }
 
+// fromTag 读取音频文件内嵌的图片。
+// 按上述优先级挑选正面封面，都不匹配时退回第一张图片
+// （专辑内嵌图可能包含封底、内页等多张）。
 func fromTag(ctx context.Context, path string) sourceFunc {
 	return func() (io.ReadCloser, string, error) {
 		if path == "" {
@@ -128,6 +140,8 @@ func fromTag(ctx context.Context, path string) sourceFunc {
 	}
 }
 
+// fromFFmpegTag 用 ffmpeg 提取内嵌封面，
+// 作为 tag 库无法解析的格式（如部分视频容器）的兜底手段。
 func fromFFmpegTag(ctx context.Context, ffmpeg ffmpeg.FFmpeg, path string) sourceFunc {
 	return func() (io.ReadCloser, string, error) {
 		if path == "" {
@@ -141,6 +155,7 @@ func fromFFmpegTag(ctx context.Context, ffmpeg ffmpeg.FFmpeg, path string) sourc
 	}
 }
 
+// fromAlbum 回退到所属专辑的封面，供单曲无独立封面时使用。
 func fromAlbum(ctx context.Context, a *artwork, id model.ArtworkID) sourceFunc {
 	return func() (io.ReadCloser, string, error) {
 		r, _, err := a.Get(ctx, id, 0, false)
@@ -151,12 +166,15 @@ func fromAlbum(ctx context.Context, a *artwork, id model.ArtworkID) sourceFunc {
 	}
 }
 
+// fromAlbumPlaceholder 返回内置占位图，作为最后兜底，永不失败。
 func fromAlbumPlaceholder() sourceFunc {
 	return func() (io.ReadCloser, string, error) {
 		r, _ := resources.FS().Open(consts.PlaceholderAlbumArt)
 		return r, consts.PlaceholderAlbumArt, nil
 	}
 }
+
+// fromArtistExternalSource 从外部代理获取艺术家图片。
 func fromArtistExternalSource(ctx context.Context, ar model.Artist, provider external.Provider) sourceFunc {
 	return func() (io.ReadCloser, string, error) {
 		imageUrl, err := provider.ArtistImage(ctx, ar.ID)
@@ -168,6 +186,7 @@ func fromArtistExternalSource(ctx context.Context, ar model.Artist, provider ext
 	}
 }
 
+// fromAlbumExternalSource 从外部代理获取专辑封面。
 func fromAlbumExternalSource(ctx context.Context, al model.Album, provider external.Provider) sourceFunc {
 	return func() (io.ReadCloser, string, error) {
 		imageUrl, err := provider.AlbumImage(ctx, al.ID)
@@ -179,6 +198,8 @@ func fromAlbumExternalSource(ctx context.Context, al model.Album, provider exter
 	}
 }
 
+// fromURL 下载远程图片，5 秒超时以免慢速外部服务拖住封面请求。
+// 返回的 Body 由调用方负责关闭。
 func fromURL(ctx context.Context, imageUrl *url.URL) (io.ReadCloser, string, error) {
 	hc := http.Client{Timeout: 5 * time.Second}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, imageUrl.String(), nil)

@@ -19,6 +19,7 @@ import (
 
 const spotifyAgentName = "spotify"
 
+// spotifyAgent 是 Spotify 元数据代理，目前仅用于获取艺人图片。
 type spotifyAgent struct {
 	ds     model.DataStore
 	id     string
@@ -26,6 +27,7 @@ type spotifyAgent struct {
 	client *client
 }
 
+// spotifyConstructor 构造代理。未配置 ID/Secret 时返回 nil 表示不可用。
 func spotifyConstructor(ds model.DataStore) agents.Interface {
 	if conf.Server.Spotify.ID == "" || conf.Server.Spotify.Secret == "" {
 		return nil
@@ -43,10 +45,12 @@ func spotifyConstructor(ds model.DataStore) agents.Interface {
 	return l
 }
 
+// AgentName 返回代理名。
 func (s *spotifyAgent) AgentName() string {
 	return spotifyAgentName
 }
 
+// GetArtistImages 返回艺人图片，尺寸取图片宽度。
 func (s *spotifyAgent) GetArtistImages(ctx context.Context, id, name, mbid string) ([]agents.ExternalImage, error) {
 	a, err := s.searchArtist(ctx, name)
 	if err != nil {
@@ -68,6 +72,12 @@ func (s *spotifyAgent) GetArtistImages(ctx context.Context, id, name, mbid strin
 	return res, nil
 }
 
+// searchArtist 按名称搜索艺人并挑出最佳匹配。
+//
+// Spotify 的搜索排序未必符合需要，故本地重排：
+// 依次按「有无图片」「名称编辑距离」「热度」三级排序，
+// 用定长格式化字符串拼接实现多字段比较。
+// 最终仍要求首位结果名称完全一致，否则视为未找到，避免误配。
 func (s *spotifyAgent) searchArtist(ctx context.Context, name string) (*Artist, error) {
 	artists, err := s.client.searchArtists(ctx, name, 40)
 	if err != nil || len(artists) == 0 {
@@ -89,6 +99,7 @@ func (s *spotifyAgent) searchArtist(ctx context.Context, name string) (*Artist, 
 	return &artists[0], err
 }
 
+// init 在配置加载后注册代理。
 func init() {
 	conf.AddHook(func() {
 		agents.Register(spotifyAgentName, spotifyConstructor)

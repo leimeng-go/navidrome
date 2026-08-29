@@ -10,6 +10,8 @@ import (
 	"github.com/navidrome/navidrome/core/scrobbler"
 )
 
+// Set 是 core 层的 wire 依赖注入提供者集合，
+// 汇总各服务的构造函数，由 wire 在编译期生成装配代码。
 var Set = wire.NewSet(
 	NewMediaStreamer,
 	GetTranscodingCache,

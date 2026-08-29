@@ -24,6 +24,7 @@ import (
 //go:embed token_received.html
 var tokenReceivedPage []byte
 
+// Router 提供 Last.fm 账号关联相关的 HTTP 接口。
 type Router struct {
 	http.Handler
 	ds          model.DataStore
@@ -33,6 +34,7 @@ type Router struct {
 	secret      string
 }
 
+// NewRouter 创建关联路由。
 func NewRouter(ds model.DataStore) *Router {
 	r := &Router{
 		ds:          ds,
@@ -48,6 +50,9 @@ func NewRouter(ds model.DataStore) *Router {
 	return r
 }
 
+// routes 注册路由。
+// 查询与解绑需要登录；回调由 Last.fm 跳转触发，不能要求认证，
+// 故用 URL 中的 uid 参数标识用户。
 func (s *Router) routes() http.Handler {
 	r := chi.NewRouter()
 
@@ -64,6 +69,7 @@ func (s *Router) routes() http.Handler {
 	return r
 }
 
+// getLinkStatus 返回当前用户是否已关联，并附带 apiKey 供前端拼装授权链接。
 func (s *Router) getLinkStatus(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
 		"apiKey": s.apiKey,
@@ -80,6 +86,7 @@ func (s *Router) getLinkStatus(w http.ResponseWriter, r *http.Request) {
 	_ = rest.RespondWithJSON(w, http.StatusOK, resp)
 }
 
+// unlink 解除关联，删除保存的 session key。
 func (s *Router) unlink(w http.ResponseWriter, r *http.Request) {
 	u, _ := request.UserFrom(r.Context())
 	err := s.sessionKeys.Delete(r.Context(), u.ID)
@@ -90,6 +97,7 @@ func (s *Router) unlink(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// callback 处理 Last.fm 授权回调，用令牌换取 session key 并落库。
 func (s *Router) callback(w http.ResponseWriter, r *http.Request) {
 	p := req.Params(r)
 	token, err := p.String("token")
@@ -117,6 +125,8 @@ func (s *Router) callback(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, "response", time.Now(), bytes.NewReader(tokenReceivedPage))
 }
 
+// fetchSessionKey 换取并保存 session key。
+// 出错日志带上 requestId，便于与返回给用户的错误页对应排查。
 func (s *Router) fetchSessionKey(ctx context.Context, uid, token string) error {
 	sessionKey, err := s.client.getSession(ctx, token)
 	if err != nil {

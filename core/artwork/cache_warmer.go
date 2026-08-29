@@ -18,6 +18,7 @@ import (
 	"github.com/navidrome/navidrome/utils/pl"
 )
 
+// CacheWarmer 在后台预热封面缓存。
 type CacheWarmer interface {
 	PreCache(artID model.ArtworkID)
 }
@@ -25,6 +26,13 @@ type CacheWarmer interface {
 // NewCacheWarmer creates a new CacheWarmer instance. The CacheWarmer will pre-cache Artwork images in the background
 // to speed up the response time when the image is requested by the UI. The cache is pre-populated with the original
 // image size, as well as the size defined in the UICoverArtSize constant.
+//
+// NewCacheWarmer 创建缓存预热器。
+// 扫描时提前生成 UI 常用尺寸的缩略图，用户浏览时即可直接命中缓存。
+// 缓存被禁用时返回空实现，让调用方无需到处判断开关。
+//
+// 后台上下文中注入虚拟管理员：预热播放列表封面需要访问权限，
+// 而后台任务并没有真实的登录用户。
 func NewCacheWarmer(artwork Artwork, cache cache.FileCache) CacheWarmer {
 	// If image cache is disabled, return a NOOP implementation
 	if conf.Server.ImageCacheSize == "0" || !conf.Server.EnableArtworkPrecache {
@@ -50,6 +58,7 @@ func NewCacheWarmer(artwork Artwork, cache cache.FileCache) CacheWarmer {
 	return a
 }
 
+// cacheWarmer 用 map 缓冲待预热的封面 ID，天然去重，由后台协程分批处理。
 type cacheWarmer struct {
 	artwork    Artwork
 	buffer     map[model.ArtworkID]struct{}
@@ -58,6 +67,7 @@ type cacheWarmer struct {
 	wakeSignal chan struct{}
 }
 
+// PreCache 把封面 ID 加入预热队列，立即返回，不做实际取图。
 func (a *cacheWarmer) PreCache(artID model.ArtworkID) {
 	if a.cache.Disabled(context.Background()) {
 		return
@@ -68,6 +78,7 @@ func (a *cacheWarmer) PreCache(artID model.ArtworkID) {
 	a.sendWakeSignal()
 }
 
+// sendWakeSignal 唤醒后台协程，通道容量 1，不阻塞调用方。
 func (a *cacheWarmer) sendWakeSignal() {
 	// Don't block if the previous signal was not read yet
 	select {
@@ -76,6 +87,11 @@ func (a *cacheWarmer) sendWakeSignal() {
 	}
 }
 
+// run 后台预热循环，由信号或 10 秒超时驱动。
+//
+// 缓存被禁用则清空缓冲并退出；
+// 缓存暂不可用（如仍在初始化）则保留缓冲继续等待。
+// 每轮整体换出缓冲后再解锁处理，期间新请求可继续入队。
 func (a *cacheWarmer) run(ctx context.Context) {
 	for {
 		a.waitSignal(ctx, 10*time.Second)
@@ -121,6 +137,7 @@ func (a *cacheWarmer) run(ctx context.Context) {
 	}
 }
 
+// waitSignal 等待唤醒信号、超时或上下文取消，三者任一即返回。
 func (a *cacheWarmer) waitSignal(ctx context.Context, timeout time.Duration) {
 	select {
 	case <-time.After(timeout):
@@ -129,6 +146,8 @@ func (a *cacheWarmer) waitSignal(ctx context.Context, timeout time.Duration) {
 	}
 }
 
+// processBatch 以 2 路并发处理一批预热请求。
+// 并发度刻意压低：预热是后台低优先级任务，不应与用户请求争抢资源。
 func (a *cacheWarmer) processBatch(ctx context.Context, batch []model.ArtworkID) {
 	log.Trace(ctx, "PreCaching a new batch of artwork", "batchSize", len(batch))
 	input := pl.FromSlice(ctx, batch)
@@ -138,6 +157,8 @@ func (a *cacheWarmer) processBatch(ctx context.Context, batch []model.ArtworkID)
 	}
 }
 
+// doCacheImage 取一次图以触发缓存写入，数据本身丢弃。
+// 单张限时 10 秒，避免个别慢图拖住整批预热。
 func (a *cacheWarmer) doCacheImage(ctx context.Context, id model.ArtworkID) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -154,10 +175,12 @@ func (a *cacheWarmer) doCacheImage(ctx context.Context, id model.ArtworkID) erro
 	return nil
 }
 
+// NoopCacheWarmer 返回空实现，用于测试或禁用预热的场景。
 func NoopCacheWarmer() CacheWarmer {
 	return &noopCacheWarmer{}
 }
 
+// noopCacheWarmer 是不做任何事的预热器。
 type noopCacheWarmer struct{}
 
 func (a *noopCacheWarmer) PreCache(model.ArtworkID) {}

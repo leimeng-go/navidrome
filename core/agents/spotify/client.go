@@ -21,20 +21,24 @@ var (
 	ErrNotFound = errors.New("spotify: not found")
 )
 
+// httpDoer 抽象 HTTP 执行，便于注入缓存客户端与测试替身。
 type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// newClient 创建 Spotify API 客户端。
 func newClient(id, secret string, hc httpDoer) *client {
 	return &client{id, secret, hc}
 }
 
+// client 是 Spotify Web API 的薄封装。
 type client struct {
 	id     string
 	secret string
 	hc     httpDoer
 }
 
+// searchArtists 按名称搜索艺人。
 func (c *client) searchArtists(ctx context.Context, name string, limit int) ([]Artist, error) {
 	token, err := c.authorize(ctx)
 	if err != nil {
@@ -62,6 +66,9 @@ func (c *client) searchArtists(ctx context.Context, name string, limit int) ([]A
 	return results.Artists.Items, err
 }
 
+// authorize 走 client credentials 流程换取访问令牌。
+// 该流程不涉及用户身份，仅用于访问公开数据。
+// 令牌本身不在此缓存，依赖注入的 HTTP 缓存客户端复用响应。
 func (c *client) authorize(ctx context.Context) (string, error) {
 	payload := url.Values{}
 	payload.Add("grant_type", "client_credentials")
@@ -86,6 +93,7 @@ func (c *client) authorize(ctx context.Context) (string, error) {
 	return "", errors.New("invalid response")
 }
 
+// makeRequest 发起请求并解析 JSON 响应。
 func (c *client) makeRequest(req *http.Request, response interface{}) error {
 	log.Trace(req.Context(), fmt.Sprintf("Sending Spotify %s request", req.Method), "url", req.URL)
 	resp, err := c.hc.Do(req)
@@ -106,6 +114,7 @@ func (c *client) makeRequest(req *http.Request, response interface{}) error {
 	return json.Unmarshal(data, response)
 }
 
+// parseError 解析 Spotify 的错误响应体。
 func (c *client) parseError(data []byte) error {
 	var e Error
 	err := json.Unmarshal(data, &e)

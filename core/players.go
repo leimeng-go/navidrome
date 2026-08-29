@@ -14,11 +14,17 @@ import (
 	"github.com/navidrome/navidrome/utils"
 )
 
+// Players 管理播放器注册与查询。
+// 每个「用户 + 客户端 + UserAgent」组合对应一个播放器记录，
+// 用于保存各客户端独立的转码与音量偏好。
 type Players interface {
 	Get(ctx context.Context, playerId string) (*model.Player, error)
 	Register(ctx context.Context, id, client, userAgent, ip string) (*model.Player, *model.Transcoding, error)
 }
 
+// NewPlayers 创建播放器服务。
+// limiter 用于限制写库频率——每次请求都会带上播放器信息，
+// 若逐次落库将产生大量无谓写入。
 func NewPlayers(ds model.DataStore) Players {
 	return &players{
 		ds:      ds,
@@ -31,6 +37,13 @@ type players struct {
 	limiter utils.Limiter
 }
 
+// Register 注册或更新播放器，并返回其绑定的转码配置。
+//
+// 查找顺序：先按 ID 命中（ID 与 client 不符则视为无效，防止 ID 被冒用），
+// 再按「用户+客户端+UserAgent」匹配已有记录，最后才新建。
+//
+// 写库经限流器节流，且单独设置 1 秒超时——
+// 播放器信息更新属于次要操作，不应拖慢主请求。
 func (p *players) Register(ctx context.Context, playerID, client, userAgent, ip string) (*model.Player, *model.Transcoding, error) {
 	var plr *model.Player
 	var trc *model.Transcoding
@@ -77,6 +90,7 @@ func (p *players) Register(ctx context.Context, playerID, client, userAgent, ip 
 	return plr, trc, err
 }
 
+// Get 按 ID 查询播放器。
 func (p *players) Get(ctx context.Context, playerId string) (*model.Player, error) {
 	return p.ds.Player(ctx).Get(playerId)
 }

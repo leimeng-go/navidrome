@@ -17,6 +17,7 @@ import (
 	"github.com/navidrome/navidrome/utils/singleton"
 )
 
+// NowPlayingInfo 是一条「正在播放」记录，按播放器 ID 维护。
 type NowPlayingInfo struct {
 	MediaFile  model.MediaFile
 	Start      time.Time
@@ -26,11 +27,13 @@ type NowPlayingInfo struct {
 	PlayerName string
 }
 
+// Submission 是一条播放上报，Timestamp 为客户端记录的播放时刻。
 type Submission struct {
 	TrackID   string
 	Timestamp time.Time
 }
 
+// nowPlayingEntry 是待推送给外部 scrobbler 的队列项。
 type nowPlayingEntry struct {
 	ctx      context.Context
 	userId   string
@@ -38,6 +41,8 @@ type nowPlayingEntry struct {
 	position int
 }
 
+// PlayTracker 跟踪播放状态：维护「正在播放」列表、累加播放次数，
+// 并把播放信息转发给各外部 scrobbler（Last.fm、ListenBrainz 等）。
 type PlayTracker interface {
 	NowPlaying(ctx context.Context, playerId string, playerName string, trackId string, position int) error
 	GetNowPlaying(ctx context.Context) ([]NowPlayingInfo, error)
@@ -46,11 +51,17 @@ type PlayTracker interface {
 
 // PluginLoader is a minimal interface for plugin manager usage in PlayTracker
 // (avoids import cycles)
+//
+// PluginLoader 是插件管理器的最小接口，此处重新声明以避免循环导入。
 type PluginLoader interface {
 	PluginNames(capability string) []string
 	LoadScrobbler(name string) (Scrobbler, bool)
 }
 
+// playTracker 是 PlayTracker 的实现。
+//
+// 「正在播放」用带 TTL 的缓存维护，超时自动淘汰，无需显式的「停止播放」通知。
+// 对外推送走队列 + 后台协程：外部服务可能很慢，不能阻塞播放请求。
 type playTracker struct {
 	ds                model.DataStore
 	broker            events.Broker
@@ -66,6 +77,7 @@ type playTracker struct {
 	workerDone        chan struct{}
 }
 
+// GetPlayTracker 返回 PlayTracker 单例。
 func GetPlayTracker(ds model.DataStore, broker events.Broker, pluginManager PluginLoader) PlayTracker {
 	return singleton.GetInstance(func() *playTracker {
 		return newPlayTracker(ds, broker, pluginManager)
@@ -74,6 +86,9 @@ func GetPlayTracker(ds model.DataStore, broker events.Broker, pluginManager Plug
 
 // This constructor only exists for testing. For normal usage, the PlayTracker has to be a singleton, returned by
 // the GetPlayTracker function above
+//
+// newPlayTracker 构造实例并启动后台推送协程。
+// 内置 scrobbler 一律套一层缓冲装饰器，使外部服务不可用时能重试而不丢失记录。
 func newPlayTracker(ds model.DataStore, broker events.Broker, pluginManager PluginLoader) *playTracker {
 	m := cache.NewSimpleCache[string, NowPlayingInfo]()
 	p := &playTracker{
@@ -117,6 +132,7 @@ func (p *playTracker) stopNowPlayingWorker() {
 }
 
 // pluginNamesMatchScrobblers returns true if the set of pluginNames matches the keys in pluginScrobblers
+// pluginNamesMatchScrobblers 判断插件集合是否与已加载的 scrobbler 完全一致，用于跳过无变化的刷新。
 func pluginNamesMatchScrobblers(pluginNames []string, scrobblers map[string]Scrobbler) bool {
 	if len(pluginNames) != len(scrobblers) {
 		return false
@@ -130,6 +146,10 @@ func pluginNamesMatchScrobblers(pluginNames []string, scrobblers map[string]Scro
 }
 
 // refreshPluginScrobblers updates the pluginScrobblers map to match the current set of plugin scrobblers
+//
+// refreshPluginScrobblers 同步插件 scrobbler 列表，支持插件热插拔。
+// 已存在的实例保持不动，以免丢失其缓冲区中尚未提交的记录；
+// 移除时若实例支持 Stop 则先优雅停止。
 func (p *playTracker) refreshPluginScrobblers() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -181,6 +201,9 @@ func (p *playTracker) refreshPluginScrobblers() {
 // getActiveScrobblers refreshes plugin scrobblers, acquires a read lock,
 // combines builtin and plugin scrobblers into a new map, releases the lock,
 // and returns the combined map.
+//
+// getActiveScrobblers 返回内置与插件 scrobbler 的合集快照。
+// 返回副本使调用方可在锁外从容遍历（推送耗时较长）。
 func (p *playTracker) getActiveScrobblers() map[string]Scrobbler {
 	p.refreshPluginScrobblers()
 	p.mu.RLock()
@@ -190,6 +213,11 @@ func (p *playTracker) getActiveScrobblers() map[string]Scrobbler {
 	return combined
 }
 
+// NowPlaying 记录某播放器当前播放的曲目。
+//
+// TTL 取剩余时长再加 5 秒缓冲：客户端停播后无需显式通知，记录会自动过期；
+// 缓冲量确保曲目播完前记录不会提前消失。
+// 播放位置若超出时长（数据异常）则按 0 处理，避免负数 TTL。
 func (p *playTracker) NowPlaying(ctx context.Context, playerId string, playerName string, trackId string, position int) error {
 	mf, err := p.ds.MediaFile(ctx).GetWithParticipants(trackId)
 	if err != nil {
@@ -226,6 +254,8 @@ func (p *playTracker) NowPlaying(ctx context.Context, playerId string, playerNam
 	return nil
 }
 
+// enqueueNowPlaying 把待推送项按播放器 ID 入队（同一播放器只保留最新一条，天然去重）。
+// 上下文剥离取消信号：HTTP 请求结束后后台推送仍需继续。
 func (p *playTracker) enqueueNowPlaying(ctx context.Context, playerId string, userId string, track *model.MediaFile, position int) {
 	p.npMu.Lock()
 	defer p.npMu.Unlock()
@@ -239,6 +269,8 @@ func (p *playTracker) enqueueNowPlaying(ctx context.Context, playerId string, us
 	p.sendNowPlayingSignal()
 }
 
+// sendNowPlayingSignal 唤醒后台协程。信号通道容量为 1，
+// 已有待处理信号时直接丢弃，绝不阻塞调用方。
 func (p *playTracker) sendNowPlayingSignal() {
 	// Don't block if the previous signal was not read yet
 	select {
@@ -247,6 +279,11 @@ func (p *playTracker) sendNowPlayingSignal() {
 	}
 }
 
+// nowPlayingWorker 后台推送协程。
+//
+// 由信号或 1 秒定时轮询驱动（定时兜底，防止信号丢失导致队列滞留）。
+// 处理时先整体换出队列再解锁，使外部推送在锁外进行，
+// 期间新到的通知可继续入队，互不阻塞。
 func (p *playTracker) nowPlayingWorker() {
 	defer close(p.workerDone)
 	for {
@@ -275,6 +312,9 @@ func (p *playTracker) nowPlayingWorker() {
 	}
 }
 
+// dispatchNowPlaying 向所有已授权的 scrobbler 推送「正在播放」。
+// 未知艺术家的曲目不外传：外部服务无法匹配，只会产生垃圾数据。
+// 单个 scrobbler 失败不影响其余。
 func (p *playTracker) dispatchNowPlaying(ctx context.Context, userId string, t *model.MediaFile, position int) {
 	if t.Artist == consts.UnknownArtist {
 		log.Debug(ctx, "Ignoring external NowPlaying update for track with unknown artist", "track", t.Title, "artist", t.Artist)
@@ -294,6 +334,7 @@ func (p *playTracker) dispatchNowPlaying(ctx context.Context, userId string, t *
 	}
 }
 
+// GetNowPlaying 返回当前所有「正在播放」记录，按开始时间倒序。
 func (p *playTracker) GetNowPlaying(_ context.Context) ([]NowPlayingInfo, error) {
 	res := p.playMap.Values()
 	sort.Slice(res, func(i, j int) bool {
@@ -302,6 +343,11 @@ func (p *playTracker) GetNowPlaying(_ context.Context) ([]NowPlayingInfo, error)
 	return res, nil
 }
 
+// Submit 处理播放上报：累加本地播放次数，并按需转发给外部 scrobbler。
+//
+// 逐条处理，单条失败只记日志——客户端可能一次提交离线期间攒下的多条记录，
+// 不应因其中一条无效而整批丢弃。
+// 至少成功一条才发送刷新事件，让 UI 更新播放次数。
 func (p *playTracker) Submit(ctx context.Context, submissions []Submission) error {
 	username, _ := request.UsernameFrom(ctx)
 	player, _ := request.PlayerFrom(ctx)
@@ -336,6 +382,8 @@ func (p *playTracker) Submit(ctx context.Context, submissions []Submission) erro
 	return nil
 }
 
+// incPlay 在单个事务中累加曲目、专辑及各参与艺术家的播放次数，
+// 并按配置记录播放历史，保证多级计数的一致性。
 func (p *playTracker) incPlay(ctx context.Context, track *model.MediaFile, timestamp time.Time) error {
 	return p.ds.WithTx(func(tx model.DataStore) error {
 		err := tx.MediaFile(ctx).IncPlayCount(track.ID, timestamp)
@@ -359,6 +407,7 @@ func (p *playTracker) incPlay(ctx context.Context, track *model.MediaFile, times
 	})
 }
 
+// dispatchScrobble 把播放记录投递给各 scrobbler 的缓冲区，由其异步提交到外部服务。
 func (p *playTracker) dispatchScrobble(ctx context.Context, t *model.MediaFile, playTime time.Time) {
 	if t.Artist == consts.UnknownArtist {
 		log.Debug(ctx, "Ignoring external Scrobble for track with unknown artist", "track", t.Title, "artist", t.Artist)
@@ -381,8 +430,10 @@ func (p *playTracker) dispatchScrobble(ctx context.Context, t *model.MediaFile, 
 	}
 }
 
+// constructors 是内置 scrobbler 的注册表。
 var constructors map[string]Constructor
 
+// Register 注册内置 scrobbler，通常在各实现包的 init 中调用。
 func Register(name string, init Constructor) {
 	if constructors == nil {
 		constructors = make(map[string]Constructor)

@@ -17,13 +17,16 @@ import (
 	_ "golang.org/x/image/webp"
 )
 
+// ErrUnavailable 表示找不到可用的封面图。
 var ErrUnavailable = errors.New("artwork unavailable")
 
+// Artwork 提供封面图读取，涵盖专辑、艺术家、曲目与播放列表。
 type Artwork interface {
 	Get(ctx context.Context, artID model.ArtworkID, size int, square bool) (io.ReadCloser, time.Time, error)
 	GetOrPlaceholder(ctx context.Context, id string, size int, square bool) (io.ReadCloser, time.Time, error)
 }
 
+// NewArtwork 创建封面服务。
 func NewArtwork(ds model.DataStore, cache cache.FileCache, ffmpeg ffmpeg.FFmpeg, provider external.Provider) Artwork {
 	return &artwork{ds: ds, cache: cache, ffmpeg: ffmpeg, provider: provider}
 }
@@ -35,12 +38,17 @@ type artwork struct {
 	provider external.Provider
 }
 
+// artworkReader 是封面数据源的抽象，同时充当缓存条目。
+// 各类实体（专辑/艺术家/曲目/播放列表）与缩放器都实现该接口，
+// 从而共用同一套缓存机制。
 type artworkReader interface {
 	cache.Item
 	LastUpdated() time.Time
 	Reader(ctx context.Context) (io.ReadCloser, string, error)
 }
 
+// GetOrPlaceholder 取封面，取不到时返回内置占位图。
+// 占位图的时间戳统一取服务启动时间，便于客户端缓存。
 func (a *artwork) GetOrPlaceholder(ctx context.Context, id string, size int, square bool) (reader io.ReadCloser, lastUpdate time.Time, err error) {
 	artID, err := a.getArtworkId(ctx, id)
 	if err == nil {
@@ -57,6 +65,8 @@ func (a *artwork) GetOrPlaceholder(ctx context.Context, id string, size int, squ
 	return reader, lastUpdate, err
 }
 
+// Get 取指定封面，结果经文件缓存。
+// 请求取消与「无封面」属预期情况，不记为错误日志。
 func (a *artwork) Get(ctx context.Context, artID model.ArtworkID, size int, square bool) (reader io.ReadCloser, lastUpdate time.Time, err error) {
 	artReader, err := a.getArtworkReader(ctx, artID, size, square)
 	if err != nil {
@@ -73,10 +83,14 @@ func (a *artwork) Get(ctx context.Context, artID model.ArtworkID, size int, squa
 	return r, artReader.LastUpdated(), nil
 }
 
+// coverArtGetter 由能提供封面 ID 的实体实现。
 type coverArtGetter interface {
 	CoverArtID() model.ArtworkID
 }
 
+// getArtworkId 把请求中的 ID 解析为 ArtworkID。
+// 优先按封面 ID 格式解析；失败则当作实体 ID 反查实体，
+// 兼容 Subsonic 客户端直接传实体 ID 请求封面的用法。
 func (a *artwork) getArtworkId(ctx context.Context, id string) (model.ArtworkID, error) {
 	if id == "" {
 		return model.ArtworkID{}, ErrUnavailable
@@ -107,6 +121,9 @@ func (a *artwork) getArtworkId(ctx context.Context, id string) (model.ArtworkID,
 	return artID, nil
 }
 
+// getArtworkReader 按需求挑选封面数据源。
+// 指定了尺寸或需要方图时套一层缩放器，由它再去取原图；
+// 否则按实体类型分派到对应的读取器。
 func (a *artwork) getArtworkReader(ctx context.Context, artID model.ArtworkID, size int, square bool) (artworkReader, error) {
 	var artReader artworkReader
 	var err error

@@ -6,6 +6,7 @@ import (
 	"syscall"
 )
 
+// getOSVersion 调用 sw_vers 获取 macOS 版本号。
 func getOSVersion() (string, string) {
 	cmd := exec.Command("sw_vers", "-productVersion")
 
@@ -17,6 +18,8 @@ func getOSVersion() (string, string) {
 	return strings.TrimSpace(string(output)), ""
 }
 
+// getFilesystemType 从 statfs 结果中读取文件系统名。
+// macOS 直接返回名称字符串（C 风格定长数组），需在首个 0 字节处截断。
 func getFilesystemType(path string) (string, error) {
 	var stat syscall.Statfs_t
 	err := syscall.Statfs(path, &stat)

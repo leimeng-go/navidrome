@@ -23,11 +23,13 @@ const deezerApiPictureMediumSize = 250
 const deezerApiPictureSmallSize = 56
 const deezerArtistSearchLimit = 50
 
+// deezerAgent 是 Deezer 元数据代理，提供艺人图片、相似艺人、热门曲目与简介。
 type deezerAgent struct {
 	dataStore model.DataStore
 	client    *client
 }
 
+// deezerConstructor 构造代理。Deezer 公开 API 无需鉴权，故不涉及密钥配置。
 func deezerConstructor(dataStore model.DataStore) agents.Interface {
 	agent := &deezerAgent{dataStore: dataStore}
 	httpClient := &http.Client{
@@ -38,10 +40,13 @@ func deezerConstructor(dataStore model.DataStore) agents.Interface {
 	return agent
 }
 
+// AgentName 返回代理名。
 func (s *deezerAgent) AgentName() string {
 	return deezerAgentName
 }
 
+// GetArtistImages 返回艺人图片。
+// Deezer 只给出固定的四档尺寸，故用常量标注尺寸供上层择优选用。
 func (s *deezerAgent) GetArtistImages(ctx context.Context, _, name, _ string) ([]agents.ExternalImage, error) {
 	artist, err := s.searchArtist(ctx, name)
 	if err != nil {
@@ -74,6 +79,9 @@ func (s *deezerAgent) GetArtistImages(ctx context.Context, _, name, _ string) ([
 	return res, nil
 }
 
+// searchArtist 按名称搜索艺人。
+// Deezer 的模糊搜索容易返回相近但不同的艺人，
+// 因此只有排名第一的结果名称完全一致（忽略大小写）才认可，避免张冠李戴。
 func (s *deezerAgent) searchArtist(ctx context.Context, name string) (*Artist, error) {
 	artists, err := s.client.searchArtists(ctx, name, deezerArtistSearchLimit)
 	if errors.Is(err, ErrNotFound) || len(artists) == 0 {
@@ -100,6 +108,7 @@ func (s *deezerAgent) searchArtist(ctx context.Context, name string) (*Artist, e
 	return &artists[0], err
 }
 
+// GetSimilarArtists 返回相似艺人。Deezer 不支持 limit 参数，故在本地截断。
 func (s *deezerAgent) GetSimilarArtists(ctx context.Context, _, name, _ string, limit int) ([]agents.Artist, error) {
 	artist, err := s.searchArtist(ctx, name)
 	if err != nil {
@@ -122,6 +131,7 @@ func (s *deezerAgent) GetSimilarArtists(ctx context.Context, _, name, _ string, 
 	return res, nil
 }
 
+// GetArtistTopSongs 返回艺人热门曲目。
 func (s *deezerAgent) GetArtistTopSongs(ctx context.Context, _, artistName, _ string, count int) ([]agents.Song, error) {
 	artist, err := s.searchArtist(ctx, artistName)
 	if err != nil {
@@ -141,6 +151,7 @@ func (s *deezerAgent) GetArtistTopSongs(ctx context.Context, _, artistName, _ st
 	return res, nil
 }
 
+// GetArtistBiography 返回艺人简介。
 func (s *deezerAgent) GetArtistBiography(ctx context.Context, _, name, _ string) (string, error) {
 	artist, err := s.searchArtist(ctx, name)
 	if err != nil {
@@ -150,6 +161,7 @@ func (s *deezerAgent) GetArtistBiography(ctx context.Context, _, name, _ string)
 	return s.client.getArtistBio(ctx, artist.ID)
 }
 
+// init 在配置加载后按开关注册代理。
 func init() {
 	conf.AddHook(func() {
 		if conf.Server.Deezer.Enabled {

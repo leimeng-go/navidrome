@@ -18,13 +18,16 @@ import (
 	"github.com/navidrome/navidrome/utils/cache"
 )
 
+// MediaStreamer 负责生成音频流，按需进行转码。
 type MediaStreamer interface {
 	NewStream(ctx context.Context, id string, reqFormat string, reqBitRate int, offset int) (*Stream, error)
 	DoStream(ctx context.Context, mf *model.MediaFile, reqFormat string, reqBitRate int, reqOffset int) (*Stream, error)
 }
 
+// TranscodingCache 是转码结果的文件缓存，相同参数的重复请求可直接命中。
 type TranscodingCache cache.FileCache
 
+// NewMediaStreamer 创建流媒体服务。
 func NewMediaStreamer(ds model.DataStore, t ffmpeg.FFmpeg, cache TranscodingCache) MediaStreamer {
 	return &mediaStreamer{ds: ds, transcoder: t, cache: cache}
 }
@@ -35,6 +38,7 @@ type mediaStreamer struct {
 	cache      cache.FileCache
 }
 
+// streamJob 是一次转码任务，同时充当缓存条目。
 type streamJob struct {
 	ms       *mediaStreamer
 	mf       *model.MediaFile
@@ -44,10 +48,13 @@ type streamJob struct {
 	offset   int
 }
 
+// Key 生成缓存键。
+// 纳入 UpdatedAt 是关键：文件被替换后键随之变化，自动失效旧的转码结果。
 func (j *streamJob) Key() string {
 	return fmt.Sprintf("%s.%s.%d.%s.%d", j.mf.ID, j.mf.UpdatedAt.Format(time.RFC3339Nano), j.bitRate, j.format, j.offset)
 }
 
+// NewStream 按媒体文件 ID 创建音频流。
 func (ms *mediaStreamer) NewStream(ctx context.Context, id string, reqFormat string, reqBitRate int, reqOffset int) (*Stream, error) {
 	mf, err := ms.ds.MediaFile(ctx).Get(id)
 	if err != nil {
@@ -57,6 +64,10 @@ func (ms *mediaStreamer) NewStream(ctx context.Context, id string, reqFormat str
 	return ms.DoStream(ctx, mf, reqFormat, reqBitRate, reqOffset)
 }
 
+// DoStream 生成音频流。
+//
+// 分两条路径：format 为 "raw" 时直接打开原文件，可随机定位（支持 seek）；
+// 否则走转码缓存，缓存命中时同样可 seek，实时转码的流则只能顺序读取。
 func (ms *mediaStreamer) DoStream(ctx context.Context, mf *model.MediaFile, reqFormat string, reqBitRate int, reqOffset int) (*Stream, error) {
 	var format string
 	var bitRate int
@@ -112,6 +123,8 @@ func (ms *mediaStreamer) DoStream(ctx context.Context, mf *model.MediaFile, reqF
 	return s, nil
 }
 
+// Stream 是一路音频流，附带 HTTP 响应所需的元信息。
+// Seeker 可能为 nil（实时转码），此时不支持范围请求。
 type Stream struct {
 	ctx     context.Context
 	mf      *model.MediaFile
@@ -126,11 +139,23 @@ func (s *Stream) Duration() float32   { return s.mf.Duration }
 func (s *Stream) ContentType() string { return mime.TypeByExtension("." + s.format) }
 func (s *Stream) Name() string        { return s.mf.Title + "." + s.format }
 func (s *Stream) ModTime() time.Time  { return s.mf.UpdatedAt }
+
+// EstimatedContentLength 由时长与比特率估算字节数。
+// 转码流长度事先未知，只能给出估计值供客户端显示进度。
 func (s *Stream) EstimatedContentLength() int {
 	return int(s.mf.Duration * float32(s.bitRate) / 8 * 1024)
 }
 
 // TODO This function deserves some love (refactoring)
+//
+// selectTranscodingOptions 决定实际使用的输出格式与比特率。
+//
+// 优先级：显式请求的格式 > 播放器绑定的转码配置 > 默认降采样格式。
+// 播放器若设置了 MaxBitRate，会覆盖转码配置的默认比特率。
+// 默认降采样仅在请求比特率低于原始比特率时启用——升采样毫无意义。
+//
+// 最后有一道兜底：若目标格式与原格式相同且比特率不低于原值，
+// 则退回 "raw" 直接推流，避免无谓的转码开销。
 func selectTranscodingOptions(ctx context.Context, ds model.DataStore, mf *model.MediaFile, reqFormat string, reqBitRate int) (format string, bitRate int) {
 	format = "raw"
 	if reqFormat == "raw" {
@@ -187,6 +212,7 @@ var (
 	instanceTranscodingCache TranscodingCache
 )
 
+// GetTranscodingCache 返回转码缓存单例。
 func GetTranscodingCache() TranscodingCache {
 	onceTranscodingCache.Do(func() {
 		instanceTranscodingCache = NewTranscodingCache()
@@ -194,6 +220,13 @@ func GetTranscodingCache() TranscodingCache {
 	return instanceTranscodingCache
 }
 
+// NewTranscodingCache 创建转码文件缓存，缓存未命中时调用 ffmpeg 实时转码。
+//
+// 上下文的选择很关键：
+// 开启取消功能时直接用请求上下文，客户端断开即终止 ffmpeg，节省 CPU；
+// 关闭时改用 background 上下文并保留请求值，
+// 让转码跑完并完整写入缓存——用户断开后重连即可直接命中，
+// 代价是可能为无人收听的流白白转码。
 func NewTranscodingCache() TranscodingCache {
 	return cache.NewFileCache("Transcoding", conf.Server.TranscodingCacheSize,
 		consts.TranscodingCacheDir, consts.DefaultTranscodingCacheMaxItems,

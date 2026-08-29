@@ -8,6 +8,7 @@ import (
 	"syscall"
 )
 
+// getOSVersion 从 /etc/os-release 解析发行版版本号与 ID。
 func getOSVersion() (string, string) {
 	file, err := os.Open("/etc/os-release")
 	if err != nil {
@@ -40,6 +41,8 @@ type MountInfo struct {
 	FSType     string
 }
 
+// fsTypeMap 把 statfs 返回的魔数映射为文件系统名。
+// 末尾的负数条目用于兼容不同架构上 f_type 有符号/无符号解释不一致的问题。
 var fsTypeMap = map[int64]string{
 	0x5346414f: "afs",
 	0x187:      "autofs",
@@ -84,6 +87,7 @@ var fsTypeMap = map[int64]string{
 	-0xd0adff0:  "f2fs",  // 0xf2f52010
 }
 
+// getFilesystemType 通过 statfs 魔数识别文件系统类型，未知魔数原样输出便于后续补充。
 func getFilesystemType(path string) (string, error) {
 	var fsStat syscall.Statfs_t
 	err := syscall.Statfs(path, &fsStat)

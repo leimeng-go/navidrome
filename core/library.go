@@ -22,12 +22,15 @@ import (
 )
 
 // Watcher interface for managing file system watchers
+// Watcher 是文件监听器的最小接口。
+// 此处重新声明而非直接引用 scanner 包，是为了避免 core 与 scanner 之间的循环依赖。
 type Watcher interface {
 	Watch(ctx context.Context, lib *model.Library) error
 	StopWatching(ctx context.Context, libraryID int) error
 }
 
 // Library provides business logic for library management and user-library associations
+// Library 提供音乐库管理与「用户—库」授权关系的业务逻辑。
 type Library interface {
 	GetUserLibraries(ctx context.Context, userID string) (model.Libraries, error)
 	SetUserLibraries(ctx context.Context, userID string, libraryIDs []int) error
@@ -36,6 +39,7 @@ type Library interface {
 	NewRepository(ctx context.Context) rest.Repository
 }
 
+// libraryService 是 Library 的实现。
 type libraryService struct {
 	ds      model.DataStore
 	scanner model.Scanner
@@ -44,6 +48,7 @@ type libraryService struct {
 }
 
 // NewLibrary creates a new Library service
+// NewLibrary 创建音乐库服务。
 func NewLibrary(ds model.DataStore, scanner model.Scanner, watcher Watcher, broker events.Broker) Library {
 	return &libraryService{
 		ds:      ds,
@@ -54,7 +59,9 @@ func NewLibrary(ds model.DataStore, scanner model.Scanner, watcher Watcher, brok
 }
 
 // User-library association operations
+// 「用户—库」授权关系相关操作
 
+// GetUserLibraries 返回用户可访问的音乐库列表。
 func (s *libraryService) GetUserLibraries(ctx context.Context, userID string) (model.Libraries, error) {
 	// Verify user exists
 	if _, err := s.ds.User(ctx).Get(userID); err != nil {
@@ -64,6 +71,11 @@ func (s *libraryService) GetUserLibraries(ctx context.Context, userID string) (m
 	return s.ds.User(ctx).GetUserLibraries(userID)
 }
 
+// SetUserLibraries 设置用户可访问的音乐库。
+//
+// 两条业务约束：管理员自动拥有全部库，禁止手工指定（否则会与自动授权冲突）；
+// 普通用户至少要有一个库，否则登录后将看不到任何内容。
+// 变更后广播刷新事件，让在线客户端立即感知权限变化。
 func (s *libraryService) SetUserLibraries(ctx context.Context, userID string, libraryIDs []int) error {
 	// Verify user exists
 	user, err := s.ds.User(ctx).Get(userID)
@@ -102,6 +114,8 @@ func (s *libraryService) SetUserLibraries(ctx context.Context, userID string, li
 	return nil
 }
 
+// ValidateLibraryAccess 校验用户是否有权访问指定音乐库。
+// 注意：管理员判定取自 context 中的当前登录用户，而授权列表按传入的 userID 查询。
 func (s *libraryService) ValidateLibraryAccess(ctx context.Context, userID string, libraryID int) error {
 	user, ok := request.UserFrom(ctx)
 	if !ok {
@@ -130,7 +144,10 @@ func (s *libraryService) ValidateLibraryAccess(ctx context.Context, userID strin
 }
 
 // REST repository wrapper
+// REST 仓储包装层
 
+// NewRepository 返回带业务副作用的 REST 仓储：
+// 在纯数据操作之外，附加校验、监听器启停、扫描触发与事件广播。
 func (s *libraryService) NewRepository(ctx context.Context) rest.Repository {
 	repo := s.ds.Library(ctx)
 	wrapper := &libraryRepositoryWrapper{
@@ -145,6 +162,8 @@ func (s *libraryService) NewRepository(ctx context.Context) rest.Repository {
 	return wrapper
 }
 
+// libraryRepositoryWrapper 同时嵌入 REST 与领域仓储接口：
+// 未被覆写的方法直接透传，Save/Update/Delete 则加上业务副作用。
 type libraryRepositoryWrapper struct {
 	rest.Repository
 	model.LibraryRepository
@@ -155,6 +174,8 @@ type libraryRepositoryWrapper struct {
 	broker  events.Broker
 }
 
+// Save 新建音乐库，随后启动监听、异步触发扫描并广播刷新事件。
+// 扫描放在独立协程中，避免阻塞创建请求的响应。
 func (r *libraryRepositoryWrapper) Save(entity interface{}) (string, error) {
 	lib := entity.(*model.Library)
 	if err := r.validateLibrary(lib); err != nil {
@@ -187,6 +208,9 @@ func (r *libraryRepositoryWrapper) Save(entity interface{}) (string, error) {
 	return strconv.Itoa(lib.ID), nil
 }
 
+// Update 更新音乐库。
+// 仅当路径发生变化时才重启监听并重新扫描——
+// 改名等操作不影响文件系统，无需付出扫描代价。
 func (r *libraryRepositoryWrapper) Update(id string, entity interface{}, _ ...string) error {
 	lib := entity.(*model.Library)
 	libID, err := strconv.Atoi(id)
@@ -235,6 +259,7 @@ func (r *libraryRepositoryWrapper) Update(id string, entity interface{}, _ ...st
 	return nil
 }
 
+// Delete 删除音乐库，停止监听并触发扫描以清理残留的孤儿数据。
 func (r *libraryRepositoryWrapper) Delete(id string) error {
 	libID, err := strconv.Atoi(id)
 	if err != nil {
@@ -276,7 +301,11 @@ func (r *libraryRepositoryWrapper) Delete(id string) error {
 }
 
 // Helper methods
+// 辅助方法
 
+// mapError 把底层错误翻译为 REST 层错误。
+// 唯一约束冲突通过匹配错误文本识别（SQLite 未提供结构化错误码），
+// 返回的是 react-admin 的翻译键而非可读文案。
 func (r *libraryRepositoryWrapper) mapError(err error) error {
 	if err == nil {
 		return nil
@@ -305,6 +334,8 @@ func (r *libraryRepositoryWrapper) mapError(err error) error {
 	}
 }
 
+// validateLibrary 校验音乐库字段，收集全部错误后一次性返回，
+// 便于前端同时高亮所有非法字段。
 func (r *libraryRepositoryWrapper) validateLibrary(library *model.Library) error {
 	validationErrors := make(map[string]string)
 
@@ -328,6 +359,9 @@ func (r *libraryRepositoryWrapper) validateLibrary(library *model.Library) error
 	return nil
 }
 
+// validateLibraryPath 校验库路径必须为绝对路径、存在且为可访问的目录。
+// 校验过程中会把路径规范化后写回 library.Path。
+// 返回值是 i18n 翻译键，由前端渲染为本地化文案。
 func (r *libraryRepositoryWrapper) validateLibraryPath(library *model.Library) error {
 	// Validate path format
 	if !filepath.IsAbs(library.Path) {
@@ -375,6 +409,8 @@ func (r *libraryRepositoryWrapper) validateLibraryPath(library *model.Library) e
 	return nil
 }
 
+// validateLibraryIDs 校验给定的库 ID 是否全部存在。
+// 用一次 COUNT 比对数量，避免逐个查询。
 func (s *libraryService) validateLibraryIDs(ctx context.Context, libraryIDs []int) error {
 	if len(libraryIDs) == 0 {
 		return nil
@@ -395,6 +431,7 @@ func (s *libraryService) validateLibraryIDs(ctx context.Context, libraryIDs []in
 	return nil
 }
 
+// triggerScan 在后台协程中触发一次快速扫描，action 仅用于日志描述场景。
 func (r *libraryRepositoryWrapper) triggerScan(lib *model.Library, action string) {
 	log.Info(r.ctx, fmt.Sprintf("Triggering scan for %s library", action), "libraryID", lib.ID, "name", lib.Name, "path", lib.Path)
 	start := time.Now()

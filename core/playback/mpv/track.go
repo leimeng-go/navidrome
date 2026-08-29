@@ -16,6 +16,8 @@ import (
 	"github.com/navidrome/navidrome/model"
 )
 
+// MpvTrack 是通过 mpv 的 JSON IPC 接口控制的一路音轨。
+// CloseCalled 用于区分「主动关闭」与「自然播放结束」，避免主动关闭时误报播放完成。
 type MpvTrack struct {
 	MediaFile     model.MediaFile
 	PlaybackDone  chan bool
@@ -25,6 +27,10 @@ type MpvTrack struct {
 	CloseCalled   bool
 }
 
+// NewTrack 启动一个 mpv 进程加载指定曲目，并建立 IPC 连接。
+//
+// mpv 启动后才会创建控制 socket，故需轮询等待其出现（最多 3 秒）后再连接。
+// 另起协程监听连接关闭：连接断开即代表播放结束，据此通知设备切下一首。
 func NewTrack(ctx context.Context, playbackDoneChannel chan bool, deviceName string, mf model.MediaFile) (*MpvTrack, error) {
 	log.Debug("Loading track", "trackPath", mf.Path, "mediaType", mf.ContentType())
 
@@ -77,6 +83,8 @@ func (t *MpvTrack) String() string {
 }
 
 // Used to control the playback volume. A float value between 0.0 and 1.0.
+//
+// SetVolume 设置音量。入参为 0.0~1.0，mpv 的 volume 属性为 0~100，需要换算。
 func (t *MpvTrack) SetVolume(value float32) {
 	// mpv's volume as described in the --volume parameter:
 	// Set the startup volume. 0 means silence, 100 means no volume reduction or amplification.
@@ -90,6 +98,7 @@ func (t *MpvTrack) SetVolume(value float32) {
 	}
 }
 
+// Unpause 恢复播放。
 func (t *MpvTrack) Unpause() {
 	log.Debug("Unpausing track", "track", t)
 	err := t.Conn.Set("pause", false)
@@ -98,6 +107,7 @@ func (t *MpvTrack) Unpause() {
 	}
 }
 
+// Pause 暂停播放。
 func (t *MpvTrack) Pause() {
 	log.Debug("Pausing track", "track", t)
 	err := t.Conn.Set("pause", true)
@@ -106,6 +116,11 @@ func (t *MpvTrack) Pause() {
 	}
 }
 
+// Close 释放音轨资源。
+//
+// 先置 CloseCalled，防止连接断开时触发「播放完成」的误切歌。
+// 优先通过 IPC 发 quit 让 mpv 优雅退出；失败则直接杀进程，
+// 最后清理 socket 文件，避免残留。
 func (t *MpvTrack) Close() {
 	log.Debug("Closing resources", "track", t)
 	t.CloseCalled = true
@@ -131,6 +146,7 @@ func (t *MpvTrack) Close() {
 	}
 }
 
+// isSocketFilePresent 判断 IPC socket 文件是否仍存在。
 func (t *MpvTrack) isSocketFilePresent() bool {
 	if len(t.IPCSocketName) < 1 {
 		return false
@@ -172,6 +188,7 @@ func (t *MpvTrack) Position() int {
 	}
 }
 
+// SetPosition 跳转到指定秒数。位置相同则跳过，避免无谓的 seek 造成卡顿。
 func (t *MpvTrack) SetPosition(offset int) error {
 	log.Debug("Setting position", "offset", offset, "track", t)
 	pos := t.Position()
@@ -187,6 +204,7 @@ func (t *MpvTrack) SetPosition(offset int) error {
 	return nil
 }
 
+// IsPlaying 查询是否处于播放中（即未暂停）。
 func (t *MpvTrack) IsPlaying() bool {
 	log.Debug("Checking if track is playing", "track", t)
 	pausing, err := t.Conn.Get("pause")
@@ -203,6 +221,8 @@ func (t *MpvTrack) IsPlaying() bool {
 	return !pause
 }
 
+// waitForSocket 轮询等待 socket 文件出现，超时则报错。
+// mpv 进程启动到创建 socket 之间有延迟，需要等待而非立即连接。
 func waitForSocket(path string, timeout time.Duration, pause time.Duration) error {
 	start := time.Now()
 	end := start.Add(timeout)

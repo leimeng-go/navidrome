@@ -15,6 +15,7 @@ import (
 	"github.com/navidrome/navidrome/utils/singleton"
 )
 
+// PlaybackServer 是点唱机（Jukebox）服务：在服务器本机而非客户端上播放音频。
 type PlaybackServer interface {
 	Run(ctx context.Context) error
 	GetDeviceForUser(user string) (*playbackDevice, error)
@@ -55,6 +56,11 @@ func (ps *playbackServer) Run(ctx context.Context) error {
 	return nil
 }
 
+// initDeviceStatus 依据配置初始化音频设备列表。
+//
+// 未指定默认设备时的处理：无设备则合成一个名为 "auto" 的设备（交由系统选择）；
+// 恰好一个则直接用它；多于一个则报错——无法替用户决定该用哪个。
+// 指定了默认设备时，必须能在列表中找到，否则报错。
 func (ps *playbackServer) initDeviceStatus(ctx context.Context, devices []conf.AudioDeviceDefinition, defaultDevice string) ([]playbackDevice, error) {
 	pbDevices := make([]playbackDevice, max(1, len(devices)))
 	defaultDeviceFound := false
@@ -100,6 +106,7 @@ func (ps *playbackServer) initDeviceStatus(ctx context.Context, devices []conf.A
 	return pbDevices, nil
 }
 
+// getDefaultDevice 返回标记为默认的设备。
 func (ps *playbackServer) getDefaultDevice() (*playbackDevice, error) {
 	for idx := range ps.playbackDevices {
 		if ps.playbackDevices[idx].Default {

@@ -1,5 +1,7 @@
 package insights
 
+// Data 是上报给统计服务的完整数据结构。
+// 所有字段均为匿名信息：不含用户名、路径、密钥等可识别内容。
 type Data struct {
 	InsightsID string `json:"id"`
 	Version    string `json:"version"`
@@ -80,11 +82,13 @@ type Data struct {
 	Plugins map[string]PluginInfo `json:"plugins,omitempty"`
 }
 
+// PluginInfo 是单个插件的名称与版本。
 type PluginInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 }
 
+// FSInfo 仅记录文件系统类型，不含路径。
 type FSInfo struct {
 	Type string `json:"type,omitempty"`
 }

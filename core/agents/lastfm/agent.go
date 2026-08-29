@@ -26,11 +26,15 @@ const (
 	sessionKeyProperty = "LastFMSessionKey"
 )
 
+// ignoredBiographies 是需要丢弃的「简介」前缀。
+// Last.fm 对未知艺人会返回一段只含链接的占位文本，不应当作真实简介展示。
 var ignoredBiographies = []string{
 	// Unknown Artist
 	`<a href="https://www.last.fm/music/`,
 }
 
+// lastfmAgent 同时实现元数据代理与 scrobbler。
+// getInfoMutex 串行化 artist.getInfo 调用，避免并发请求打爆第三方接口限流。
 type lastfmAgent struct {
 	ds           model.DataStore
 	sessionKeys  *agents.SessionKeys
@@ -42,6 +46,7 @@ type lastfmAgent struct {
 	getInfoMutex sync.Mutex
 }
 
+// lastFMConstructor 构造代理。未启用或缺少 API 凭据时返回 nil 表示不可用。
 func lastFMConstructor(ds model.DataStore) *lastfmAgent {
 	if !conf.Server.LastFM.Enabled || conf.Server.LastFM.ApiKey == "" || conf.Server.LastFM.Secret == "" {
 		return nil
@@ -62,12 +67,15 @@ func lastFMConstructor(ds model.DataStore) *lastfmAgent {
 	return l
 }
 
+// AgentName 返回代理名。
 func (l *lastfmAgent) AgentName() string {
 	return lastFMAgentName
 }
 
+// imageRegex 从图片 URL 中提取尺寸段（形如 /u/300x300/）。
 var imageRegex = regexp.MustCompile(`u\/(\d+)`)
 
+// GetAlbumInfo 获取专辑简介与链接。
 func (l *lastfmAgent) GetAlbumInfo(ctx context.Context, name, artist, mbid string) (*agents.AlbumInfo, error) {
 	a, err := l.callAlbumGetInfo(ctx, name, artist, mbid)
 	if err != nil {
@@ -82,6 +90,8 @@ func (l *lastfmAgent) GetAlbumInfo(ctx context.Context, name, artist, mbid strin
 	}, nil
 }
 
+// GetAlbumImages 从专辑信息中提取封面图，尺寸由 URL 解析而来。
+// Last.fm 会返回重复尺寸和空 URL，需要去重与跳过。
 func (l *lastfmAgent) GetAlbumImages(ctx context.Context, name, artist, mbid string) ([]agents.ExternalImage, error) {
 	a, err := l.callAlbumGetInfo(ctx, name, artist, mbid)
 	if err != nil {
@@ -117,6 +127,7 @@ func (l *lastfmAgent) GetAlbumImages(ctx context.Context, name, artist, mbid str
 	return images, nil
 }
 
+// GetArtistMBID 获取艺人的 MusicBrainz ID。
 func (l *lastfmAgent) GetArtistMBID(ctx context.Context, id string, name string) (string, error) {
 	a, err := l.callArtistGetInfo(ctx, name)
 	if err != nil {
@@ -128,6 +139,7 @@ func (l *lastfmAgent) GetArtistMBID(ctx context.Context, id string, name string)
 	return a.MBID, nil
 }
 
+// GetArtistURL 获取艺人主页链接。
 func (l *lastfmAgent) GetArtistURL(ctx context.Context, id, name, mbid string) (string, error) {
 	a, err := l.callArtistGetInfo(ctx, name)
 	if err != nil {
@@ -139,6 +151,7 @@ func (l *lastfmAgent) GetArtistURL(ctx context.Context, id, name, mbid string) (
 	return a.URL, nil
 }
 
+// GetArtistBiography 获取艺人简介，过滤掉「未知艺人」的占位文本。
 func (l *lastfmAgent) GetArtistBiography(ctx context.Context, id, name, mbid string) (string, error) {
 	a, err := l.callArtistGetInfo(ctx, name)
 	if err != nil {
@@ -156,6 +169,7 @@ func (l *lastfmAgent) GetArtistBiography(ctx context.Context, id, name, mbid str
 	return a.Bio.Summary, nil
 }
 
+// GetSimilarArtists 获取相似艺人列表。
 func (l *lastfmAgent) GetSimilarArtists(ctx context.Context, id, name, mbid string, limit int) ([]agents.Artist, error) {
 	resp, err := l.callArtistGetSimilar(ctx, name, limit)
 	if err != nil {
@@ -174,6 +188,7 @@ func (l *lastfmAgent) GetSimilarArtists(ctx context.Context, id, name, mbid stri
 	return res, nil
 }
 
+// GetArtistTopSongs 获取艺人热门曲目。
 func (l *lastfmAgent) GetArtistTopSongs(ctx context.Context, id, artistName, mbid string, count int) ([]agents.Song, error) {
 	resp, err := l.callArtistGetTopTracks(ctx, artistName, count)
 	if err != nil {
@@ -197,6 +212,10 @@ var (
 	artistIgnoredImage   = "2a96cbd8b46e442fc41c2b86b821562f" // Last.fm artist placeholder image name
 )
 
+// GetArtistImages 获取艺人图片。
+//
+// Last.fm API 已不再提供艺人图片，只能抓取艺人主页 HTML，
+// 从 og:image 元标签中取图。命中官方占位图时视为无图。
 func (l *lastfmAgent) GetArtistImages(ctx context.Context, _, name, mbid string) ([]agents.ExternalImage, error) {
 	log.Debug(ctx, "Getting artist images from Last.fm", "name", name)
 	a, err := l.callArtistGetInfo(ctx, name)
@@ -239,6 +258,9 @@ func (l *lastfmAgent) GetArtistImages(ctx context.Context, _, name, mbid string)
 	return res, nil
 }
 
+// callAlbumGetInfo 调用 album.getInfo。
+// 错误码 6 表示未找到：若本次带了 mbid，则去掉 mbid 用名称重试一次——
+// 本地 mbid 可能有误，按名称往往仍能查到。
 func (l *lastfmAgent) callAlbumGetInfo(ctx context.Context, name, artist, mbid string) (*Album, error) {
 	a, err := l.client.albumGetInfo(ctx, name, artist, mbid)
 	var lfErr *lastFMError
@@ -260,6 +282,7 @@ func (l *lastfmAgent) callAlbumGetInfo(ctx context.Context, name, artist, mbid s
 	return a, nil
 }
 
+// callArtistGetInfo 调用 artist.getInfo，加锁串行化以配合上游限流。
 func (l *lastfmAgent) callArtistGetInfo(ctx context.Context, name string) (*Artist, error) {
 	l.getInfoMutex.Lock()
 	defer l.getInfoMutex.Unlock()
@@ -272,6 +295,7 @@ func (l *lastfmAgent) callArtistGetInfo(ctx context.Context, name string) (*Arti
 	return a, nil
 }
 
+// callArtistGetSimilar 调用 artist.getSimilar。
 func (l *lastfmAgent) callArtistGetSimilar(ctx context.Context, name string, limit int) ([]Artist, error) {
 	s, err := l.client.artistGetSimilar(ctx, name, limit)
 	if err != nil {
@@ -281,6 +305,7 @@ func (l *lastfmAgent) callArtistGetSimilar(ctx context.Context, name string, lim
 	return s.Artists, nil
 }
 
+// callArtistGetTopTracks 调用 artist.getTopTracks。
 func (l *lastfmAgent) callArtistGetTopTracks(ctx context.Context, artistName string, count int) ([]Track, error) {
 	t, err := l.client.artistGetTopTracks(ctx, artistName, count)
 	if err != nil {
@@ -290,6 +315,9 @@ func (l *lastfmAgent) callArtistGetTopTracks(ctx context.Context, artistName str
 	return t.Track, nil
 }
 
+// getArtistForScrobble 决定上报用的艺人名。
+// 多艺人合作曲目的合并署名（如 "A feat. B"）在 Last.fm 常匹配不上，
+// 开启 ScrobbleFirstArtistOnly 时只报第一位艺人以提高匹配率。
 func (l *lastfmAgent) getArtistForScrobble(track *model.MediaFile, role model.Role, displayName string) string {
 	if conf.Server.LastFM.ScrobbleFirstArtistOnly && len(track.Participants[role]) > 0 {
 		return track.Participants[role][0].Name
@@ -297,6 +325,8 @@ func (l *lastfmAgent) getArtistForScrobble(track *model.MediaFile, role model.Ro
 	return displayName
 }
 
+// NowPlaying 上报「正在播放」。
+// 该状态时效性强，失败即标记为不可恢复，不进重试队列。
 func (l *lastfmAgent) NowPlaying(ctx context.Context, userId string, track *model.MediaFile, position int) error {
 	sk, err := l.sessionKeys.Get(ctx, userId)
 	if err != nil || sk == "" {
@@ -319,6 +349,11 @@ func (l *lastfmAgent) NowPlaying(ctx context.Context, userId string, track *mode
 	return nil
 }
 
+// Scrobble 上报一次播放记录。
+//
+// 30 秒以内的曲目按 Last.fm 规范不予上报。
+// 错误分类决定重试策略：网络等非业务错误、以及错误码 11（服务暂不可用）
+// 和 16（临时错误）标记为可重试，其余视为不可恢复以免无谓堆积。
 func (l *lastfmAgent) Scrobble(ctx context.Context, userId string, s scrobbler.Scrobble) error {
 	sk, err := l.sessionKeys.Get(ctx, userId)
 	if err != nil || sk == "" {
@@ -354,11 +389,14 @@ func (l *lastfmAgent) Scrobble(ctx context.Context, userId string, s scrobbler.S
 	return errors.Join(err, scrobbler.ErrUnrecoverable)
 }
 
+// IsAuthorized 判断用户是否已完成 Last.fm 授权。
 func (l *lastfmAgent) IsAuthorized(ctx context.Context, userId string) bool {
 	sk, err := l.sessionKeys.Get(ctx, userId)
 	return err == nil && sk != ""
 }
 
+// init 在配置加载后注册代理与 scrobbler。
+// 注册函数显式返回 nil 而非 nil 指针，规避 Go 的类型化 nil 接口陷阱。
 func init() {
 	conf.AddHook(func() {
 		agents.Register(lastFMAgentName, func(ds model.DataStore) agents.Interface {

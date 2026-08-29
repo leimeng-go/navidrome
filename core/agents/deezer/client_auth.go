@@ -14,12 +14,14 @@ import (
 	"github.com/navidrome/navidrome/log"
 )
 
+// jwtToken 是带过期时间的 JWT 缓存，可被多个请求并发读写。
 type jwtToken struct {
 	token     string
 	expiresAt time.Time
 	mu        sync.RWMutex
 }
 
+// get 返回缓存的 token，已过期则返回 false。
 func (j *jwtToken) get() (string, bool) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
@@ -29,6 +31,7 @@ func (j *jwtToken) get() (string, bool) {
 	return "", false
 }
 
+// set 写入 token 及其有效期。
 func (j *jwtToken) set(token string, expiresIn time.Duration) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -36,6 +39,11 @@ func (j *jwtToken) set(token string, expiresIn time.Duration) {
 	j.expiresAt = time.Now().Add(expiresIn)
 }
 
+// getJWT 获取访问 GraphQL 接口所需的匿名 JWT。
+//
+// 有效期从 token 自身的 exp 声明解析而来，而非依赖固定常量。
+// 预留 1 分钟缓冲，以容忍时钟偏差与网络延迟，避免用到临界过期的 token。
+// 此处只解析不校验签名：签名由服务端验证，客户端仅需读取过期时间。
 func (c *client) getJWT(ctx context.Context) (string, error) {
 	// Check if we have a valid cached token
 	if token, valid := c.jwt.get(); valid {
