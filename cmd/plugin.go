@@ -95,6 +95,7 @@ func init() {
 
 // Validation helpers
 
+// validatePluginPackageFile 校验插件包文件存在且扩展名正确。
 func validatePluginPackageFile(path string) error {
 	if !utils.FileExists(path) {
 		return fmt.Errorf("plugin package not found: %s", path)
@@ -105,6 +106,7 @@ func validatePluginPackageFile(path string) error {
 	return nil
 }
 
+// validatePluginDirectory 校验插件目录存在并返回其路径。
 func validatePluginDirectory(pluginsDir, pluginName string) (string, error) {
 	pluginDir := filepath.Join(pluginsDir, pluginName)
 	if !utils.FileExists(pluginDir) {
@@ -113,6 +115,7 @@ func validatePluginDirectory(pluginsDir, pluginName string) (string, error) {
 	return pluginDir, nil
 }
 
+// resolvePluginPath 解析插件路径，识别开发模式用的符号链接并解析到真实目录。
 func resolvePluginPath(pluginDir string) (resolvedPath string, isSymlink bool, err error) {
 	// Check if it's a directory or a symlink
 	lstat, err := os.Lstat(pluginDir)
@@ -154,6 +157,7 @@ func resolvePluginPath(pluginDir string) (resolvedPath string, isSymlink bool, e
 
 // Package handling helpers
 
+// loadAndValidatePackage 载入并校验插件包。
 func loadAndValidatePackage(ndpPath string) (*plugins.PluginPackage, error) {
 	if err := validatePluginPackageFile(ndpPath); err != nil {
 		return nil, err
@@ -167,6 +171,7 @@ func loadAndValidatePackage(ndpPath string) (*plugins.PluginPackage, error) {
 	return pkg, nil
 }
 
+// extractAndSetupPlugin 解压插件并收紧目录权限。
 func extractAndSetupPlugin(ndpPath, targetDir string) error {
 	if err := plugins.ExtractPackage(ndpPath, targetDir); err != nil {
 		return fmt.Errorf("failed to extract plugin package: %w", err)
@@ -178,6 +183,8 @@ func extractAndSetupPlugin(ndpPath, targetDir string) error {
 
 // Display helpers
 
+// displayPluginTableRow 输出插件列表的一行。
+// 出错的插件也照常列出并标记 ERROR，便于用户看到问题原因而非直接消失。
 func displayPluginTableRow(w *tabwriter.Writer, discovery plugins.PluginDiscoveryEntry) {
 	if discovery.Error != nil {
 		// Handle global errors (like directory read failure)
@@ -210,6 +217,7 @@ func displayPluginTableRow(w *tabwriter.Writer, discovery plugins.PluginDiscover
 		cmp.Or(discovery.Manifest.Description, "-"))
 }
 
+// displayTypedPermissions 展示插件申请的各项权限，供安装前审阅。
 func displayTypedPermissions(permissions schema.PluginManifestPermissions, indent string) {
 	if permissions.Http != nil {
 		fmt.Printf("%shttp:\n", indent)
@@ -271,6 +279,7 @@ func displayTypedPermissions(permissions schema.PluginManifestPermissions, inden
 	}
 }
 
+// displayPluginDetails 展示插件详情。
 func displayPluginDetails(manifest *schema.PluginManifest, fileInfo *pluginFileInfo, permInfo *pluginPermissionInfo) {
 	fmt.Println("\nPlugin Information:")
 	fmt.Printf("  Name:        %s\n", manifest.Name)
@@ -401,6 +410,7 @@ func getPermissionInfo(pluginDir string) *pluginPermissionInfo {
 
 // Command implementations
 
+// pluginList 列出已安装插件。
 func pluginList(cmd *cobra.Command, args []string) {
 	discoveries := plugins.DiscoverPlugins(conf.Server.Plugins.Folder)
 
@@ -413,6 +423,7 @@ func pluginList(cmd *cobra.Command, args []string) {
 	w.Flush()
 }
 
+// pluginInfo 展示单个插件的详情。
 func pluginInfo(cmd *cobra.Command, args []string) {
 	path := args[0]
 	pluginsDir := conf.Server.Plugins.Folder
@@ -449,6 +460,7 @@ func pluginInfo(cmd *cobra.Command, args []string) {
 	displayPluginDetails(manifest, fileInfo, permInfo)
 }
 
+// pluginInstall 安装插件包。
 func pluginInstall(cmd *cobra.Command, args []string) {
 	ndpPath := args[0]
 	pluginsDir := conf.Server.Plugins.Folder
@@ -474,6 +486,7 @@ func pluginInstall(cmd *cobra.Command, args []string) {
 	fmt.Printf("Plugin '%s' v%s installed successfully\n", pkg.Manifest.Name, pkg.Manifest.Version)
 }
 
+// pluginRemove 卸载插件。
 func pluginRemove(cmd *cobra.Command, args []string) {
 	pluginName := args[0]
 	pluginsDir := conf.Server.Plugins.Folder
@@ -503,6 +516,7 @@ func pluginRemove(cmd *cobra.Command, args []string) {
 	}
 }
 
+// pluginUpdate 用新包覆盖已安装的插件。
 func pluginUpdate(cmd *cobra.Command, args []string) {
 	ndpPath := args[0]
 	pluginsDir := conf.Server.Plugins.Folder
@@ -539,6 +553,7 @@ func pluginUpdate(cmd *cobra.Command, args []string) {
 	fmt.Printf("Plugin '%s' updated to v%s successfully\n", pkg.Manifest.Name, pkg.Manifest.Version)
 }
 
+// pluginRefresh 通知运行中的服务重新加载插件，免去重启。
 func pluginRefresh(cmd *cobra.Command, args []string) {
 	pluginName := args[0]
 	pluginsDir := conf.Server.Plugins.Folder

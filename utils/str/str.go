@@ -1,3 +1,4 @@
+// Package str 提供字符串规范化与清洗工具。
 package str
 
 import (
@@ -5,6 +6,8 @@ import (
 	"unicode/utf8"
 )
 
+// utf8ToAscii 把各类花式引号与破折号统一成 ASCII 形式。
+// 音乐标签里同一个词常混用直引号与弯引号，不归一化会导致搜索与去重失效。
 var utf8ToAscii = func() *strings.Replacer {
 	var utf8Map = map[string]string{
 		"'": `‘’‛′`,
@@ -21,10 +24,12 @@ var utf8ToAscii = func() *strings.Replacer {
 	return strings.NewReplacer(list...)
 }()
 
+// Clear 归一化标点符号。
 func Clear(name string) string {
 	return utf8ToAscii.Replace(name)
 }
 
+// LongestCommonPrefix 求最长公共前缀，用于从一组文件路径推导其共同根目录。
 func LongestCommonPrefix(list []string) string {
 	if len(list) == 0 {
 		return ""

@@ -1,3 +1,7 @@
+// Package req 提供 HTTP 查询参数的读取与类型转换。
+//
+// Subsonic 客户端实现参差不齐，参数常缺失或格式错误，
+// 故大量接口需要「取不到就用默认值」的宽容语义，这里统一提供 XxxOr 形式的方法。
 package req
 
 import (
@@ -11,10 +15,12 @@ import (
 	"github.com/navidrome/navidrome/log"
 )
 
+// Values 包装请求以提供带类型的参数读取。
 type Values struct {
 	*http.Request
 }
 
+// Params 从请求构造参数读取器。
 func Params(r *http.Request) *Values {
 	return &Values{r}
 }
@@ -27,6 +33,8 @@ var (
 func newError(err error, param string) error {
 	return fmt.Errorf("%w: '%s'", err, param)
 }
+
+// String 读取字符串参数，空值视为缺失。
 func (r *Values) String(param string) (string, error) {
 	v := r.URL.Query().Get(param)
 	if v == "" {
@@ -35,6 +43,7 @@ func (r *Values) String(param string) (string, error) {
 	return v, nil
 }
 
+// StringPtr 区分「未传该参数」与「传了空字符串」，用于部分更新场景。
 func (r *Values) StringPtr(param string) *string {
 	var v *string
 	if _, exists := r.URL.Query()[param]; exists {
@@ -44,6 +53,7 @@ func (r *Values) StringPtr(param string) *string {
 	return v
 }
 
+// BoolPtr 同 StringPtr，区分未传与传空。
 func (r *Values) BoolPtr(param string) *bool {
 	var v *bool
 	if _, exists := r.URL.Query()[param]; exists {
@@ -70,6 +80,9 @@ func (r *Values) Strings(param string) ([]string, error) {
 	return values, nil
 }
 
+// TimeOr 读取毫秒时间戳。
+// -1 是客户端表示「无」的惯用值；
+// 早于 1970-01-02 的值多半是把秒当成了毫秒，一并按缺省处理。
 func (r *Values) TimeOr(param string, def time.Time) time.Time {
 	v, _ := r.String(param)
 	if v == "" || v == "-1" {
@@ -86,6 +99,8 @@ func (r *Values) TimeOr(param string, def time.Time) time.Time {
 	return t
 }
 
+// Times 读取多个时间戳。单个值无法解析时以当前时间代替并记录警告，
+// 以保证返回的时间数量与 ID 一一对应。
 func (r *Values) Times(param string) ([]time.Time, error) {
 	pStr, err := r.Strings(param)
 	if err != nil {
@@ -140,6 +155,7 @@ func (r *Values) Int64Or(param string, def int64) int64 {
 	return v
 }
 
+// Ints 读取多个整数，无法解析的项直接跳过。
 func (r *Values) Ints(param string) ([]int, error) {
 	pStr, err := r.Strings(param)
 	if err != nil {
@@ -155,6 +171,7 @@ func (r *Values) Ints(param string) ([]int, error) {
 	return ints, nil
 }
 
+// Bool 解析布尔值，接受 true/on/1 三种写法（不同客户端习惯不同）。
 func (r *Values) Bool(param string) (bool, error) {
 	v, err := r.String(param)
 	if err != nil {

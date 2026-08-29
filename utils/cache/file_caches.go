@@ -1,3 +1,4 @@
+// Package cache 提供文件缓存、内存缓存与带缓存的 HTTP 客户端。
 package cache
 
 import (
@@ -73,6 +74,10 @@ type FileCache interface {
 //	    // Implement the logic to retrieve the data for the given item
 //	    return strings.NewReader(item.Key()), nil
 //	})
+//
+// NewFileCache 创建文件缓存。
+// 初始化（扫描既有缓存文件）在后台进行，避免拖慢启动；
+// 未就绪期间的请求直接回源，不影响功能，只是暂时没有缓存收益。
 func NewFileCache(name, cacheSize, cacheFolder string, maxItems int, getReader ReadFunc) FileCache {
 	fc := &fileCache{
 		name:        name,
@@ -129,6 +134,7 @@ func (fc *fileCache) Disabled(_ context.Context) bool {
 	return fc.disabled
 }
 
+// invalidate 移除缓存项，用于写入失败后清理半成品。
 func (fc *fileCache) invalidate(ctx context.Context, key string) error {
 	if !fc.Available(ctx) {
 		log.Debug(ctx, "Cache not initialized yet. Cannot invalidate key", "cache", fc.name, "key", key)
@@ -144,6 +150,11 @@ func (fc *fileCache) invalidate(ctx context.Context, key string) error {
 	return err
 }
 
+// Get 取缓存数据，未命中则回源并旁路写入缓存。
+//
+// 写缓存在独立 goroutine 中进行，读取方不必等待落盘。
+// 已完整写入的缓存项返回可 seek 的读取器（支持 HTTP Range 请求）；
+// 仍在写入中的项只能顺序读取。
 func (fc *fileCache) Get(ctx context.Context, arg Item) (*CachedStream, error) {
 	if !fc.Available(ctx) {
 		log.Debug(ctx, "Cache not initialized yet. Reading data directly from reader", "cache", fc.name)
@@ -203,6 +214,7 @@ func (fc *fileCache) Get(ctx context.Context, arg Item) (*CachedStream, error) {
 }
 
 // CachedStream is a wrapper around an io.ReadCloser that allows reading from a cache.
+// CachedStream 是缓存数据流，Seeker 可能为 nil（数据仍在写入时不支持定位）。
 type CachedStream struct {
 	io.Reader
 	io.Seeker
@@ -220,6 +232,7 @@ func (s *CachedStream) Close() error {
 	return nil
 }
 
+// getFinalCachedSize 返回已完整写入的缓存大小，未写完则返回 -1。
 func getFinalCachedSize(r fscache.ReadAtCloser) int64 {
 	cr, ok := r.(*fscache.CacheReader)
 	if ok {
@@ -231,6 +244,7 @@ func getFinalCachedSize(r fscache.ReadAtCloser) int64 {
 	return -1
 }
 
+// copyAndClose 把源数据写入缓存并关闭两端，多个关闭错误一并汇总返回。
 func copyAndClose(w io.WriteCloser, r io.Reader) error {
 	_, err := io.Copy(w, r)
 	if err != nil {
@@ -248,6 +262,8 @@ func copyAndClose(w io.WriteCloser, r io.Reader) error {
 	return err
 }
 
+// newFSCache 构造底层文件缓存。
+// 大小配置非法时退回默认值而非报错，配置为 0 则视为禁用缓存。
 func newFSCache(name, cacheSize, cacheFolder string, maxItems int) (fscache.Cache, error) {
 	size, err := humanize.ParseBytes(cacheSize)
 	if err != nil {

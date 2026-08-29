@@ -21,10 +21,13 @@ const (
 	backupRegexString = backupPrefix + "_(.+)\\.db"
 )
 
+// backupRegex 用于从文件名中解析出备份时间。
 var backupRegex = regexp.MustCompile(backupRegexString)
 
+// backupSuffixLayout 是文件名中的时间格式，只用不含分隔歧义的字符，保证跨平台可用。
 const backupSuffixLayout = "2006.01.02_15.04.05"
 
+// backupPath 依据时间生成备份文件路径。
 func backupPath(t time.Time) string {
 	return filepath.Join(
 		conf.Server.Backup.Path,
@@ -32,6 +35,11 @@ func backupPath(t time.Time) string {
 	)
 }
 
+// backupOrRestore 借 SQLite 的在线备份 API 复制整库，备份与恢复只是源与目标互换。
+//
+// 不直接拷贝文件：运行中的数据库随时可能被写入，文件拷贝会得到不一致的快照。
+// 一步完成（Step(-1)）意味着整个过程持有读锁，期间写操作会被阻塞，
+// 但换来的是一致的快照，对备份场景更重要。
 func backupOrRestore(ctx context.Context, isBackup bool, path string) error {
 	// heavily inspired by https://codingrabbits.dev/posts/go_and_sqlite_backup_and_maybe_restore/
 	existingConn, err := Db().Conn(ctx)
@@ -100,6 +108,7 @@ func backupOrRestore(ctx context.Context, isBackup bool, path string) error {
 	return err
 }
 
+// Backup 创建一份带时间戳的数据库备份，返回其路径。
 func Backup(ctx context.Context) (string, error) {
 	destPath := backupPath(time.Now())
 	log.Debug(ctx, "Creating backup", "path", destPath)
@@ -111,11 +120,15 @@ func Backup(ctx context.Context) (string, error) {
 	return destPath, nil
 }
 
+// Restore 从备份文件恢复数据库。
 func Restore(ctx context.Context, path string) error {
 	log.Debug(ctx, "Restoring backup", "path", path)
 	return backupOrRestore(ctx, false, path)
 }
 
+// Prune 按保留数量清理旧备份。
+// 时间从文件名解析而非取文件修改时间，后者会被拷贝、同步等操作改写。
+// 单个文件删除失败不中断整体，最后汇总错误一并返回。
 func Prune(ctx context.Context) (int, error) {
 	files, err := os.ReadDir(conf.Server.Backup.Path)
 	if err != nil {

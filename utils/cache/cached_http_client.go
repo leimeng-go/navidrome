@@ -15,6 +15,8 @@ import (
 
 const cacheSizeLimit = 100
 
+// HTTPClient 为外部 API 请求加一层短期缓存，
+// 避免刷新页面等操作对第三方服务产生重复调用（也受限于对方的调用频率限制）。
 type HTTPClient struct {
 	cache SimpleCache[string, string]
 	hc    httpDoer
@@ -25,6 +27,7 @@ type httpDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
+// requestData 是请求的可序列化形式，用于生成缓存键。
 type requestData struct {
 	Method string
 	Header http.Header
@@ -32,6 +35,7 @@ type requestData struct {
 	Body   *string
 }
 
+// NewHTTPClient 包装一个 HTTP 客户端并加上缓存。
 func NewHTTPClient(wrapped httpDoer, ttl time.Duration) *HTTPClient {
 	c := &HTTPClient{hc: wrapped, ttl: ttl}
 	c.cache = NewSimpleCache[string, string](Options{
@@ -41,6 +45,7 @@ func NewHTTPClient(wrapped httpDoer, ttl time.Duration) *HTTPClient {
 	return c
 }
 
+// Do 发起请求，命中缓存则直接返回缓存的响应。
 func (c *HTTPClient) Do(req *http.Request) (*http.Response, error) {
 	key := c.serializeReq(req)
 	cached := true
@@ -67,6 +72,8 @@ func (c *HTTPClient) Do(req *http.Request) (*http.Response, error) {
 	return c.deserializeResponse(req, respStr)
 }
 
+// serializeReq 把请求序列化为缓存键：
+// 方法、URL、请求头与请求体都参与，任一不同即视为不同请求。
 func (c *HTTPClient) serializeReq(req *http.Request) string {
 	data := requestData{
 		Method: req.Method,
@@ -82,6 +89,7 @@ func (c *HTTPClient) serializeReq(req *http.Request) string {
 	return string(j)
 }
 
+// deserializeReq 从缓存键还原请求，未命中时用它真正发起调用。
 func (c *HTTPClient) deserializeReq(reqStr string) (*http.Request, error) {
 	var data requestData
 	_ = json.Unmarshal([]byte(reqStr), &data)

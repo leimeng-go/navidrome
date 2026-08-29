@@ -62,6 +62,8 @@ var (
 	}
 )
 
+// runExporter 导出歌单为 m3u8。参数先按 ID 查，查不到再按名称查，两种写法都支持。
+// 输出为 - 或空时打印到标准输出。
 func runExporter(ctx context.Context) {
 	ds, ctx := getAdminContext(ctx)
 	playlist, err := ds.Playlist(ctx).GetWithTracks(playlistID, true, false)
@@ -95,6 +97,7 @@ func runExporter(ctx context.Context) {
 	}
 }
 
+// runList 列出歌单，支持 csv 与 json 两种输出格式。
 func runList(ctx context.Context) {
 	if outputFormat != "csv" && outputFormat != "json" {
 		log.Fatal("Invalid output format. Must be one of csv, json", "format", outputFormat)

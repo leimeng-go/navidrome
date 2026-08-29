@@ -73,6 +73,8 @@ var (
 	}
 )
 
+// runBackup 执行一次手动备份。
+// DbPath 可能带有 ?params 形式的连接参数，需截断后才能做文件存在性检查。
 func runBackup(ctx context.Context) {
 	if backupDir != "" {
 		conf.Server.Backup.Path = backupDir
@@ -102,6 +104,7 @@ func runBackup(ctx context.Context) {
 	log.Info("Backup complete", "elapsed", elapsed, "path", path)
 }
 
+// runPrune 清理旧备份。保留数为 0 意味着删除全部备份，故需二次确认。
 func runPrune(ctx context.Context) {
 	if backupDir != "" {
 		conf.Server.Backup.Path = backupDir
@@ -148,6 +151,8 @@ func runPrune(ctx context.Context) {
 	log.Info("Prune complete", "elapsed", elapsed, "successfully pruned", count)
 }
 
+// runRestore 从备份恢复。
+// 恢复会覆盖现有数据且应在停机状态下进行，故默认要求显式确认。
 func runRestore(ctx context.Context) {
 	idx := strings.LastIndex(conf.Server.DbPath, "?")
 	var path string

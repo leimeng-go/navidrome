@@ -1,3 +1,4 @@
+// Package slice 提供切片与序列的常用操作。
 package slice
 
 import (
@@ -11,6 +12,7 @@ import (
 	"golang.org/x/exp/maps"
 )
 
+// Map 逐元素转换。
 func Map[T any, R any](t []T, mapFunc func(T) R) []R {
 	r := make([]R, len(t))
 	for i, e := range t {
@@ -19,12 +21,14 @@ func Map[T any, R any](t []T, mapFunc func(T) R) []R {
 	return r
 }
 
+// MapWithArg 转换时附带一个共享参数（如 context），省去闭包捕获。
 func MapWithArg[I any, O any, A any](t []I, arg A, mapFunc func(A, I) O) []O {
 	return Map(t, func(e I) O {
 		return mapFunc(arg, e)
 	})
 }
 
+// Group 按键分组。
 func Group[T any, K comparable](s []T, keyFunc func(T) K) map[K][]T {
 	m := map[K][]T{}
 	for _, item := range s {
@@ -34,6 +38,7 @@ func Group[T any, K comparable](s []T, keyFunc func(T) K) map[K][]T {
 	return m
 }
 
+// ToMap 转换为映射。
 func ToMap[T any, K comparable, V any](s []T, transformFunc func(T) (K, V)) map[K]V {
 	m := make(map[K]V, len(s))
 	for _, item := range s {
@@ -43,6 +48,8 @@ func ToMap[T any, K comparable, V any](s []T, transformFunc func(T) (K, V)) map[
 	return m
 }
 
+// CompactByFrequency 去重并按出现次数从多到少排序。
+// 用于从多个来源的标签中挑出最主流的取值。
 func CompactByFrequency[T comparable](list []T) []T {
 	counters := make(map[T]int)
 	for _, item := range list {
@@ -56,6 +63,7 @@ func CompactByFrequency[T comparable](list []T) []T {
 	return sorted
 }
 
+// MostFrequent 返回出现次数最多的元素，零值不参与统计。
 func MostFrequent[T comparable](list []T) T {
 	var zero T
 	if len(list) == 0 {
@@ -80,19 +88,23 @@ func MostFrequent[T comparable](list []T) T {
 	return topItem
 }
 
+// Insert 在指定下标插入元素。
 func Insert[T any](slice []T, value T, index int) []T {
 	return append(slice[:index], append([]T{value}, slice[index:]...)...)
 }
 
+// Remove 移除指定下标的元素。
 func Remove[T any](slice []T, index int) []T {
 	return append(slice[:index], slice[index+1:]...)
 }
 
+// Move 把元素从一个位置移到另一个位置，用于歌单排序。
 func Move[T any](slice []T, srcIndex int, dstIndex int) []T {
 	value := slice[srcIndex]
 	return Insert(Remove(slice, srcIndex), value, dstIndex)
 }
 
+// Unique 去重并保持原有顺序。
 func Unique[T comparable](list []T) []T {
 	seen := make(map[T]struct{})
 	var result []T
@@ -106,6 +118,7 @@ func Unique[T comparable](list []T) []T {
 }
 
 // LinesFrom returns a Seq that reads lines from the given reader
+// LinesFrom 按行读取，惰性产出以免一次性载入大文件。
 func LinesFrom(reader io.Reader) iter.Seq[string] {
 	return func(yield func(string) bool) {
 		scanner := bufio.NewScanner(reader)
@@ -119,6 +132,8 @@ func LinesFrom(reader io.Reader) iter.Seq[string] {
 }
 
 // From https://stackoverflow.com/a/41433698
+// scanLines 同时支持 LF、CR 与 CRLF 三种换行符。
+// 标准库的 ScanLines 不认单独的 CR，而老式 Mac 生成的 m3u 歌单正是这种格式。
 func scanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if atEOF && len(data) == 0 {
 		return 0, nil, nil
@@ -143,6 +158,7 @@ func scanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 }
 
 // CollectChunks collects chunks of n elements from the input sequence and return a Seq of chunks
+// CollectChunks 按 n 个一组切块，用于批量写库。
 func CollectChunks[T any](it iter.Seq[T], n int) iter.Seq[[]T] {
 	return func(yield func([]T) bool) {
 		s := make([]T, 0, n)
@@ -173,6 +189,7 @@ func SeqFunc[I, O any](s []I, f func(I) O) iter.Seq[O] {
 }
 
 // Filter returns a new slice containing only the elements of s for which filterFunc returns true
+// Filter 过滤元素。
 func Filter[T any](s []T, filterFunc func(T) bool) []T {
 	var result []T
 	for _, item := range s {

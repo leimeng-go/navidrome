@@ -12,6 +12,7 @@ import (
 	. "github.com/navidrome/navidrome/utils/gg"
 )
 
+// SimpleCache 是带 TTL 的泛型内存缓存。
 type SimpleCache[K comparable, V any] interface {
 	Add(key K, value V) error
 	AddWithTTL(key K, value V, ttl time.Duration) error
@@ -28,6 +29,9 @@ type Options struct {
 	DefaultTTL time.Duration
 }
 
+// NewSimpleCache 创建内存缓存。
+// 默认命中不续期（DisableTouchOnHit），使 TTL 表示「写入后多久过期」而非「闲置多久过期」。
+// 注册清理回调，缓存被 GC 时停掉后台协程，避免泄漏。
 func NewSimpleCache[K comparable, V any](options ...Options) SimpleCache[K, V] {
 	opts := []ttlcache.Option[K, V]{
 		ttlcache.WithDisableTouchOnHit[K, V](),
@@ -86,6 +90,7 @@ func (c *simpleCache[K, V]) Get(key K) (V, error) {
 	return item.Value(), nil
 }
 
+// GetWithLoader 未命中时调用 loader 加载，并由其决定该项的 TTL。
 func (c *simpleCache[K, V]) GetWithLoader(key K, loader func(key K) (V, time.Duration, error)) (V, error) {
 	var err error
 	loaderWrapper := ttlcache.LoaderFunc[K, V](
@@ -111,6 +116,7 @@ func (c *simpleCache[K, V]) GetWithLoader(key K, loader func(key K) (V, time.Dur
 	return item.Value(), nil
 }
 
+// evictExpired 主动清理过期项。
 func (c *simpleCache[K, V]) evictExpired() {
 	if c.evictionDeadline.Load() == nil || c.evictionDeadline.Load().Before(time.Now()) {
 		c.data.DeleteExpired()

@@ -12,6 +12,8 @@ import (
 	"github.com/navidrome/navidrome/log"
 )
 
+// Encrypt 用 AES-GCM 加密字符串，结果为 base64。
+// 每次生成随机 nonce 并前置到密文中，保证相同明文每次密文不同。
 func Encrypt(ctx context.Context, encKey []byte, data string) (string, error) {
 	plaintext := []byte(data)
 
@@ -37,6 +39,8 @@ func Encrypt(ctx context.Context, encKey []byte, data string) (string, error) {
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
+// Decrypt 解密 Encrypt 的输出。
+// 数据被截断或损坏时切片操作可能 panic，故用 recover 兜底转为普通错误。
 func Decrypt(ctx context.Context, encKey []byte, encData string) (value string, err error) {
 	// Recover from any panics
 	defer func() {

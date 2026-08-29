@@ -1,3 +1,7 @@
+// Package log 是 Navidrome 的日志封装，基于 logrus。
+//
+// 相比直接使用 logrus，额外提供三项能力：
+// 从 context 继承日志字段、按代码路径设置日志级别、自动脱敏敏感信息。
 package log
 
 import (
@@ -17,10 +21,13 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// Level 是日志级别。
 type Level uint32
 
 type LevelFunc = func(ctx interface{}, msg interface{}, keyValuePairs ...interface{})
 
+// redacted 定义需要脱敏的正则。
+// 日志常被贴到 issue 中求助，故凡是密钥、令牌、密码相关的值都在输出前抹去。
 var redacted = &Hook{
 	AcceptedLevels: logrus.AllLevels,
 	RedactionList: []string{
@@ -64,6 +71,7 @@ type contextKey string
 
 const loggerCtxKey = contextKey("logger")
 
+// levelPath 表示某个代码路径下生效的日志级别。
 type levelPath struct {
 	path  string
 	level Level
@@ -79,6 +87,10 @@ var (
 )
 
 // SetLevel sets the global log level used by the simple logger.
+//
+// SetLevel 设置全局级别。
+// 底层 logger 固定为 Trace，过滤改由 shouldLog 完成，
+// 这样按路径配置的更高级别才能突破全局限制生效。
 func SetLevel(l Level) {
 	loggerMu.Lock()
 	currentLevel = l
@@ -92,6 +104,7 @@ func SetLevelString(l string) {
 	SetLevel(level)
 }
 
+// levelFromString 解析级别名，无法识别时按 info 处理。
 func levelFromString(l string) Level {
 	envLevel := strings.ToLower(l)
 	var level Level
@@ -113,6 +126,8 @@ func levelFromString(l string) Level {
 }
 
 // SetLogLevels sets the log levels for specific paths in the codebase.
+// SetLogLevels 按代码路径设置级别，便于只对某个模块开启调试日志。
+// 路径倒序排列，使更长（更具体）的前缀优先匹配。
 func SetLogLevels(levels map[string]string) {
 	loggerMu.Lock()
 	defer loggerMu.Unlock()
@@ -129,6 +144,7 @@ func SetLogSourceLine(enabled bool) {
 	logSourceLine = enabled
 }
 
+// SetRedacting 开启脱敏钩子。
 func SetRedacting(enabled bool) {
 	if enabled {
 		loggerMu.Lock()
@@ -137,6 +153,7 @@ func SetRedacting(enabled bool) {
 	}
 }
 
+// SetOutput 设置输出目标。Windows 下需转换换行符，否则日志文件在记事本中显示为单行。
 func SetOutput(w io.Writer) {
 	if runtime.GOOS == "windows" {
 		w = CRLFWriter(w)
@@ -152,6 +169,8 @@ func Redact(msg string) string {
 	return r
 }
 
+// NewContext 把日志字段附加到 context，后续用该 context 打的日志会自动带上这些字段，
+// 免去在调用链上层层传递请求 ID 之类的信息。
 func NewContext(ctx context.Context, keyValuePairs ...interface{}) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -180,6 +199,7 @@ func CurrentLevel() Level {
 }
 
 // IsGreaterOrEqualTo returns true if the caller's current log level is equal or greater than the provided level.
+// IsGreaterOrEqualTo 供调用方在构造昂贵的日志参数前先做判断。
 func IsGreaterOrEqualTo(level Level) bool {
 	return shouldLog(level, 2)
 }
@@ -209,6 +229,7 @@ func Trace(args ...interface{}) {
 	log(LevelTrace, args...)
 }
 
+// log 是各级别日志的公共实现。
 func log(level Level, args ...interface{}) {
 	if !shouldLog(level, 3) {
 		return
@@ -223,6 +244,9 @@ func Writer() io.Writer {
 	return defaultLogger.Writer()
 }
 
+// shouldLog 判断是否应输出。
+// 全局级别不够时再按调用方文件路径查找专属级别；
+// skip 用于跳过封装层，取到真正的业务调用位置。
 func shouldLog(requiredLevel Level, skip int) bool {
 	loggerMu.RLock()
 	level := currentLevel
@@ -250,6 +274,8 @@ func shouldLog(requiredLevel Level, skip int) bool {
 	return false
 }
 
+// parseArgs 解析可变参数：首个参数可以是 context、Request 或日志器，
+// 其后是消息与键值对。这种松散签名让调用处更简洁。
 func parseArgs(args []interface{}) (*logrus.Entry, string) {
 	var l *logrus.Entry
 	var err error
@@ -289,6 +315,9 @@ func parseArgs(args []interface{}) (*logrus.Entry, string) {
 	return l, ""
 }
 
+// addFields 把键值对写入日志字段。
+// 对时长、Stringer、字符串序列等类型做友好格式化；
+// 参数个数不成对时输出显式提示，而不是静默丢弃。
 func addFields(logger *logrus.Entry, keyValuePairs []interface{}) *logrus.Entry {
 	for i := 0; i < len(keyValuePairs); i += 2 {
 		switch name := keyValuePairs[i].(type) {
@@ -316,6 +345,7 @@ func addFields(logger *logrus.Entry, keyValuePairs []interface{}) *logrus.Entry 
 	return logger
 }
 
+// extractLogger 从 context、Request 或日志器中取出携带字段的日志器。
 func extractLogger(ctx interface{}) (*logrus.Entry, error) {
 	switch ctx := ctx.(type) {
 	case *logrus.Entry:
@@ -341,6 +371,8 @@ func createNewLogger() *logrus.Entry {
 	return logger
 }
 
+// init 记录项目根路径，用于把调用文件的绝对路径转成相对路径，
+// 以便与按路径配置的日志级别做前缀匹配。
 func init() {
 	defaultLogger.Level = logrus.TraceLevel
 	_, file, _, ok := runtime.Caller(0)

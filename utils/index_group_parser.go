@@ -19,8 +19,10 @@ type IndexGroups map[string]string
 //
 // Files and folders that are not covered by an index entry will be placed under the index entry "#".
 
+// indexGroupsRx 匹配 "显示名(成员字符)" 形式的分组写法。
 var indexGroupsRx = regexp.MustCompile(`(.+)\((.+)\)`)
 
+// ParseIndexGroups 解析索引分组配置，返回「字符 -> 所属分组名」的映射。
 func ParseIndexGroups(spec string) IndexGroups {
 	parsed := make(IndexGroups)
 	split := strings.Split(spec, " ")

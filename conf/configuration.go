@@ -1,3 +1,7 @@
+// Package conf 负责配置的加载、校验与默认值。
+//
+// 配置来源优先级由 viper 决定：命令行标志 > ND_ 环境变量 > 配置文件 > 默认值。
+// 配置文件支持 toml/yaml/json/ini 多种格式。
 package conf
 
 import (
@@ -19,6 +23,7 @@ import (
 	"github.com/spf13/viper"
 )
 
+// configOptions 是全部配置项。字段名即配置键，viper 大小写不敏感地映射。
 type configOptions struct {
 	ConfigFile                      string
 	Address                         string
@@ -236,11 +241,13 @@ type extAuthOptions struct {
 	UserHeader     string
 }
 
+// Server 是全局配置单例；hooks 是配置加载完成后的回调。
 var (
 	Server = &configOptions{}
 	hooks  []func()
 )
 
+// LoadFromFile 从指定文件加载配置，主要供测试与 CLI 使用。
 func LoadFromFile(confFile string) {
 	viper.SetConfigFile(confFile)
 	err := viper.ReadInConfig()
@@ -251,6 +258,10 @@ func LoadFromFile(confFile string) {
 	Load(true)
 }
 
+// Load 解析配置、创建必需目录、执行各项校验并触发回调。
+//
+// 配置错误一律直接退出：带着错误配置继续运行只会在后续产生更难定位的问题。
+// 目录相关的默认值需在解析后推导，因为它们依赖 DataFolder 的最终取值。
 func Load(noConfigDump bool) {
 	parseIniFileConfiguration()
 
@@ -381,6 +392,7 @@ func Load(noConfigDump bool) {
 	}
 }
 
+// logDeprecatedOptions 对已废弃的配置项发出警告，环境变量与配置文件两种写法都会提示。
 func logDeprecatedOptions(oldName, newName string) {
 	envVar := "ND_" + strings.ToUpper(strings.ReplaceAll(oldName, ".", "_"))
 	newEnvVar := "ND_" + strings.ToUpper(strings.ReplaceAll(newName, ".", "_"))
@@ -401,6 +413,7 @@ func logDeprecatedOptions(oldName, newName string) {
 
 // mapDeprecatedOption is used to provide backwards compatibility for deprecated options. It should be called after
 // the config has been read by viper, but before unmarshalling it into the Config struct.
+// mapDeprecatedOption 把旧配置项的值搬到新名称下，保持向后兼容。
 func mapDeprecatedOption(legacyName, newName string) {
 	if viper.IsSet(legacyName) {
 		viper.Set(newName, viper.Get(legacyName))
@@ -410,6 +423,9 @@ func mapDeprecatedOption(legacyName, newName string) {
 // parseIniFileConfiguration is used to parse the config file when it is in INI format. For INI files, it
 // would require a nested structure, so instead we unmarshal it to a map and then merge the nested [default]
 // section into the root level.
+//
+// parseIniFileConfiguration 处理 INI 格式：INI 必须有节，
+// 而其余格式是平铺的，故需把 [default] 节的内容合并回根层级以统一后续处理。
 func parseIniFileConfiguration() {
 	cfgFile := viper.ConfigFileUsed()
 	if strings.ToLower(filepath.Ext(cfgFile)) == ".ini" {
@@ -432,6 +448,8 @@ func parseIniFileConfiguration() {
 	}
 }
 
+// disableExternalServices 关闭全部外部集成，用于离线部署。
+// 登录页背景图也要换成内置图片，否则页面会因加载远程图片而卡顿。
 func disableExternalServices() {
 	log.Info("All external integrations are DISABLED!")
 	Server.EnableInsightsCollector = false
@@ -445,6 +463,7 @@ func disableExternalServices() {
 	}
 }
 
+// validatePlaylistsPath 校验歌单路径的通配符语法。
 func validatePlaylistsPath() error {
 	for _, path := range strings.Split(Server.PlaylistsPath, string(filepath.ListSeparator)) {
 		_, err := doublestar.Match(path, "")
@@ -456,6 +475,8 @@ func validatePlaylistsPath() error {
 	return nil
 }
 
+// validatePurgeMissingOption 校验丢失文件清理策略。
+// 取值非法时回落到最保守的 never，避免误删数据。
 func validatePurgeMissingOption() error {
 	allowedValues := []string{consts.PurgeMissingNever, consts.PurgeMissingAlways, consts.PurgeMissingFull}
 	valid := false
@@ -474,6 +495,7 @@ func validatePurgeMissingOption() error {
 	return nil
 }
 
+// validateScanSchedule 校验扫描计划，"0" 或空表示关闭。
 func validateScanSchedule() error {
 	if Server.Scanner.Schedule == "0" || Server.Scanner.Schedule == "" {
 		Server.Scanner.Schedule = ""
@@ -484,6 +506,7 @@ func validateScanSchedule() error {
 	return err
 }
 
+// validateBackupSchedule 校验备份计划，缺少路径或保留数为 0 时视为关闭。
 func validateBackupSchedule() error {
 	if Server.Backup.Path == "" || Server.Backup.Schedule == "" || Server.Backup.Count == 0 {
 		Server.Backup.Schedule = ""
@@ -494,6 +517,9 @@ func validateBackupSchedule() error {
 	return err
 }
 
+// validateSchedule 校验计划表达式。
+// 形如 "24h" 的时长会自动转成 cron 的 @every 写法，方便用户书写。
+// 用一个临时 cron 实例试注册来验证语法。
 func validateSchedule(schedule, field string) (string, error) {
 	if _, err := time.ParseDuration(schedule); err == nil {
 		schedule = "@every " + schedule
@@ -514,6 +540,7 @@ func AddHook(hook func()) {
 }
 
 // hasNDEnvVars checks if any ND_ prefixed environment variables are set (excluding ND_CONFIGFILE)
+// hasNDEnvVars 判断是否通过环境变量做了配置，用于提示配置来源。
 func hasNDEnvVars() bool {
 	for _, env := range os.Environ() {
 		if strings.HasPrefix(env, "ND_") && !strings.HasPrefix(env, "ND_CONFIGFILE=") {
@@ -523,6 +550,7 @@ func hasNDEnvVars() bool {
 	return false
 }
 
+// setViperDefaults 设置所有配置项的默认值。
 func setViperDefaults() {
 	viper.SetDefault("musicfolder", filepath.Join(".", "music"))
 	viper.SetDefault("cachefolder", "")
@@ -668,6 +696,8 @@ func init() {
 	setViperDefaults()
 }
 
+// InitConfig 初始化 viper：注册 INI 解码器、确定配置文件位置、绑定 ND_ 环境变量。
+// 配置文件不存在不算错误（可全部用环境变量配置），但存在却读取失败则直接退出。
 func InitConfig(cfgFile string, loadEnvVars bool) {
 	codecRegistry := viper.NewCodecRegistry()
 	_ = codecRegistry.RegisterCodec("ini", ini.Codec{
@@ -705,6 +735,8 @@ func InitConfig(cfgFile string, loadEnvVars bool) {
 
 // getConfigFile returns the path to the config file, either from the flag or from the environment variable.
 // If it is defined in the environment variable, it will check if the file exists.
+// getConfigFile 确定配置文件路径。环境变量指定的文件若不存在则忽略，
+// 退回到默认的目录搜索逻辑。
 func getConfigFile(cfgFile string) string {
 	if cfgFile != "" {
 		return cfgFile

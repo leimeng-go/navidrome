@@ -1,3 +1,4 @@
+// Package singleton 提供按类型区分的泛型单例。
 package singleton
 
 import (
@@ -14,6 +15,12 @@ var (
 	lock      sync.RWMutex
 )
 
+// GetInstance 返回类型 T 的单例，不存在时用 constructor 创建。
+//
+// 以类型名为键，故同一类型全局只会有一个实例。
+// 三段式加锁：先读锁快速命中（绝大多数调用走这条路径），
+// 未命中再加写锁复查，并用 pending 通道让并发的其他调用方等待，
+// 保证构造函数只执行一次——构造往往有副作用（建连接、起协程），重复执行代价很大。
 func GetInstance[T any](constructor func() T) T {
 	var v T
 	name := reflect.TypeOf(v).String()

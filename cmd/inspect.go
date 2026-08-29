@@ -32,6 +32,7 @@ var inspectCmd = &cobra.Command{
 	},
 }
 
+// marshalers 是各输出格式对应的序列化函数。
 var marshalers = map[string]func(interface{}) ([]byte, error){
 	"pretty": prettyMarshal,
 	"toml":   toml.Marshal,
@@ -42,6 +43,8 @@ var marshalers = map[string]func(interface{}) ([]byte, error){
 	},
 }
 
+// prettyMarshal 以人类可读的方式并列展示原始标签与映射后的标签，
+// 便于排查标签映射规则的问题。
 func prettyMarshal(v interface{}) ([]byte, error) {
 	out := v.([]core.InspectOutput)
 	var res strings.Builder
@@ -55,6 +58,7 @@ func prettyMarshal(v interface{}) ([]byte, error) {
 	return []byte(res.String()), nil
 }
 
+// runInspector 输出文件在 Navidrome 眼中的标签内容。
 func runInspector(args []string) {
 	marshal := marshalers[format]
 	if marshal == nil {

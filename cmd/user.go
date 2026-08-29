@@ -119,6 +119,8 @@ var (
 	}
 )
 
+// promptPassword 交互式读取密码，两次输入需一致；输入空密码表示取消。
+// 使用 term.ReadPassword 以避免密码回显到终端或落入 shell 历史。
 func promptPassword() string {
 	for {
 		fmt.Print("Enter new password (press enter with no password to cancel): ")
@@ -154,6 +156,7 @@ func promptPassword() string {
 	}
 }
 
+// libraryError 构造音乐库缺失的错误信息，列出请求与实际找到的 ID 以便排查。
 func libraryError(libraries model.Libraries) error {
 	ids := make([]int, len(libraries))
 	for idx, library := range libraries {
@@ -162,6 +165,7 @@ func libraryError(libraries model.Libraries) error {
 	return fmt.Errorf("not all available libraries found. Requested ids: %v, Found libraries: %v", libraryIds, ids)
 }
 
+// runCreateUser 创建用户。
 func runCreateUser(ctx context.Context) {
 	password := promptPassword()
 	if password == "" {
@@ -229,6 +233,7 @@ func runCreateUser(ctx context.Context) {
 	log.Info(ctx, "Successfully created user", "id", user.ID, "username", user.UserName)
 }
 
+// runDeleteUser 删除用户。
 func runDeleteUser(ctx context.Context) {
 	ds, ctx := getAdminContext(ctx)
 
@@ -260,6 +265,7 @@ func runDeleteUser(ctx context.Context) {
 	log.Info(ctx, "Deleted user", "username", user.UserName)
 }
 
+// runUserEdit 修改用户属性。
 func runUserEdit(ctx context.Context) {
 	ds, ctx := getAdminContext(ctx)
 
@@ -386,6 +392,7 @@ type displayUser struct {
 	Libraries  []displayLibrary `json:"libraries"`
 }
 
+// runUserList 列出所有用户。
 func runUserList(ctx context.Context) {
 	if outputFormat != "csv" && outputFormat != "json" {
 		log.Fatal("Invalid output format. Must be one of csv, json", "format", outputFormat)

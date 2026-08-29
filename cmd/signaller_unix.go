@@ -12,8 +12,10 @@ import (
 	"github.com/navidrome/navidrome/log"
 )
 
+// triggerScanSignal 是触发手动扫描的信号，便于外部脚本在拷贝完音乐后通知服务。
 const triggerScanSignal = syscall.SIGUSR1
 
+// startSignaller 监听扫描信号并触发扫描，直到 context 取消。
 func startSignaller(ctx context.Context) func() error {
 	log.Info(ctx, "Starting signaler")
 	scanner := CreateScanner(ctx)

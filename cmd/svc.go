@@ -43,12 +43,14 @@ var svcCmd = &cobra.Command{
 	Run:     runServiceCmd,
 }
 
+// svcControl 把 Navidrome 适配为操作系统服务。
 type svcControl struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
 }
 
+// Start 由服务管理器调用，必须立即返回，故在 goroutine 中运行主程序。
 func (p *svcControl) Start(service.Service) error {
 	p.done = make(chan struct{})
 	p.ctx, p.cancel = context.WithCancel(context.Background())
@@ -59,6 +61,8 @@ func (p *svcControl) Start(service.Service) error {
 	return nil
 }
 
+// Stop 取消 context 触发优雅停机，最多等 10 秒。
+// 超时不再等待，否则服务管理器会认为停止失败而强杀进程。
 func (p *svcControl) Stop(service.Service) error {
 	log.Info("Stopping service")
 	p.cancel()
@@ -113,6 +117,7 @@ func runServiceCmd(cmd *cobra.Command, _ []string) {
 	_ = cmd.Help()
 }
 
+// executablePath 返回可执行文件的绝对路径，供服务注册时写入启动命令。
 func executablePath() string {
 	if workingDirectory != "" {
 		return workingDirectory

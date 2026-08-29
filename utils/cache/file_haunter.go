@@ -21,6 +21,7 @@ type haunterKV struct {
 // If maxItems or maxSize are 0, they won't be checked
 //
 // Based on fscache.NewLRUHaunter
+// NewFileHaunter 创建缓存清理器，按数量与总大小两个上限做 LRU 淘汰。
 func NewFileHaunter(name string, maxItems int, maxSize uint64, period time.Duration) fscache.LRUHaunter {
 	return &fileHaunter{
 		name:     name,
@@ -41,6 +42,8 @@ func (j *fileHaunter) Next() time.Duration {
 	return j.period
 }
 
+// Scrub 挑出应被淘汰的缓存项。
+// 依访问时间从旧到新排序，依次移除直至数量与体积都回到上限之内。
 func (j *fileHaunter) Scrub(c fscache.CacheAccessor) (keysToReap []string) {
 	var count int
 	var size uint64
@@ -118,6 +121,7 @@ func (j *fileHaunter) Scrub(c fscache.CacheAccessor) (keysToReap []string) {
 	return keysToReap
 }
 
+// removeFirst 取出最久未访问的一项并更新计数与体积。
 func (j *fileHaunter) removeFirst(items *[]haunterKV, count int, size uint64) (*string, int, uint64, error) {
 	var f haunterKV
 

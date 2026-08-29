@@ -42,6 +42,7 @@ var scanCmd = &cobra.Command{
 	},
 }
 
+// trackScanInteractively 以日志形式输出扫描过程，仅关注告警与错误。
 func trackScanInteractively(ctx context.Context, progress <-chan *scanner.ProgressInfo) {
 	for status := range pl.ReadOrDone(ctx, progress) {
 		if status.Warning != "" {
@@ -60,6 +61,8 @@ func trackScanInteractively(ctx context.Context, progress <-chan *scanner.Progre
 	}
 }
 
+// trackScanAsSubprocess 以 gob 编码把进度写到标准输出，供父进程读取。
+// 作为子进程被调用时用此模式，便于结构化传递进度。
 func trackScanAsSubprocess(ctx context.Context, progress <-chan *scanner.ProgressInfo) {
 	encoder := gob.NewEncoder(os.Stdout)
 	for status := range pl.ReadOrDone(ctx, progress) {
@@ -70,6 +73,7 @@ func trackScanAsSubprocess(ctx context.Context, progress <-chan *scanner.Progres
 	}
 }
 
+// runScanner 执行命令行扫描，可指定扫描目标（直接给出或从文件读取）。
 func runScanner(ctx context.Context) {
 	sqlDB := db.Db()
 	defer db.Db().Close()

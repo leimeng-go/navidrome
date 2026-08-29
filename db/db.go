@@ -1,3 +1,4 @@
+// Package db 负责 SQLite 连接的创建与数据库迁移。
 package db
 
 import (
@@ -16,6 +17,7 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
+// 自定义驱动名：需要注册 SEEDEDRAND 等自定义函数，故不能直接用原生 sqlite3 驱动。
 var (
 	Dialect = "sqlite3"
 	Driver  = Dialect + "_custom"
@@ -27,6 +29,11 @@ var embedMigrations embed.FS
 
 const migrationsFolder = "migrations"
 
+// Db 返回全局数据库连接池单例。
+//
+// 注册连接钩子以提供 SEEDEDRAND 函数，供「带种子的随机排序」使用——
+// 这样分页取随机结果时各页之间顺序仍一致。
+// 内存库需加 cache=shared，否则每个连接会各自持有一个独立的空库。
 func Db() *sql.DB {
 	return singleton.GetInstance(func() *sql.DB {
 		sql.Register(Driver, &sqlite3.SQLiteDriver{
@@ -56,6 +63,9 @@ func Db() *sql.DB {
 	})
 }
 
+// Close 关闭数据库。
+// 用 WithoutCancel 剥离取消信号：停机时 context 往往已被取消，
+// 但收尾的优化与关闭操作仍需执行完。
 func Close(ctx context.Context) {
 	// Ignore cancellations when closing the DB
 	ctx = context.WithoutCancel(ctx)
@@ -70,6 +80,11 @@ func Close(ctx context.Context) {
 	}
 }
 
+// Init 打开数据库并升级到最新 schema，返回关闭函数。
+//
+// 迁移期间临时关闭外键约束：部分迁移需重建表，
+// 开着外键会因中间态的引用不一致而失败。
+// 空库属于首次安装，迁移日志静默以免刷屏。
 func Init(ctx context.Context) func() {
 	db := Db()
 
@@ -115,6 +130,10 @@ func Init(ctx context.Context) func() {
 }
 
 // Optimize runs PRAGMA optimize on each connection in the pool
+//
+// Optimize 对连接池中每条连接执行 PRAGMA optimize。
+// SQLite 的统计信息是按连接维护的，只在一条连接上执行无法惠及其余连接，
+// 故逐一取出所有连接执行后再统一归还。
 func Optimize(ctx context.Context) {
 	if !conf.Server.DevOptimizeDB {
 		return
@@ -145,6 +164,8 @@ func Optimize(ctx context.Context) {
 	}
 }
 
+// statusLogger 借 goose 的状态输出统计待执行的迁移数量。
+// goose 未提供查询接口，只能从其日志中解析。
 type statusLogger struct{ numPending int }
 
 func (*statusLogger) Fatalf(format string, v ...interface{}) { log.Fatal(fmt.Sprintf(format, v...)) }
@@ -159,6 +180,7 @@ func (l *statusLogger) Printf(format string, v ...interface{}) {
 	}
 }
 
+// hasPendingMigrations 判断是否存在未执行的迁移。
 func hasPendingMigrations(ctx context.Context, db *sql.DB, folder string) bool {
 	l := &statusLogger{}
 	goose.SetLogger(l)
@@ -169,6 +191,7 @@ func hasPendingMigrations(ctx context.Context, db *sql.DB, folder string) bool {
 	return l.numPending > 0
 }
 
+// isSchemaEmpty 通过 goose 版本表是否存在判断这是否为全新数据库。
 func isSchemaEmpty(ctx context.Context, db *sql.DB) bool {
 	rows, err := db.QueryContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name='goose_db_version';") // nolint:rowserrcheck
 	if err != nil {
@@ -178,6 +201,7 @@ func isSchemaEmpty(ctx context.Context, db *sql.DB) bool {
 	return !rows.Next()
 }
 
+// logAdapter 把 goose 的日志接入 Navidrome 日志系统，silent 用于首次建库时静默。
 type logAdapter struct {
 	ctx    context.Context
 	silent bool

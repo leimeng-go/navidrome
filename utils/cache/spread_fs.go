@@ -39,6 +39,7 @@ func NewSpreadFS(dir string, mode os.FileMode) (*spreadFS, error) {
 	return f, f.init()
 }
 
+// Reload 遍历缓存目录重建索引，供启动时恢复既有缓存。
 func (sfs *spreadFS) Reload(f func(key string, name string)) error {
 	count := 0
 	err := filepath.WalkDir(sfs.root, func(absoluteFilePath string, de fs.DirEntry, err error) error {
@@ -98,6 +99,7 @@ func (sfs *spreadFS) RemoveAll() error {
 	return sfs.init()
 }
 
+// KeyMapper 把缓存键哈希成两级子目录下的文件路径。
 func (sfs *spreadFS) KeyMapper(key string) string {
 	// When running the Haunter, fscache can call this KeyMapper with the cached filepath instead of the key.
 	// That's because we don't inform the original cache keys when reloading in the Reload function above.

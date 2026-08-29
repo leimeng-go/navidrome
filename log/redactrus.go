@@ -31,6 +31,9 @@ func (h *Hook) Levels() []logrus.Level {
 
 // Fire redacts values in a log Entry that match
 // with keys defined in the RedactionList
+//
+// Fire 对日志条目脱敏：字段名命中则整个值抹去，
+// 字符串与 map 类型的值则按正则做部分替换，消息体同样处理。
 func (h *Hook) Fire(e *logrus.Entry) error {
 	if err := h.initRedaction(); err != nil {
 		return err
@@ -63,6 +66,7 @@ func (h *Hook) Fire(e *logrus.Entry) error {
 	return nil
 }
 
+// initRedaction 惰性编译正则，只做一次。
 func (h *Hook) initRedaction() error {
 	if len(h.redactionKeys) == 0 {
 		for _, redactionKey := range h.RedactionList {
@@ -76,6 +80,7 @@ func (h *Hook) initRedaction() error {
 	return nil
 }
 
+// redact 对单个字符串做脱敏。
 func (h *Hook) redact(msg string) (string, error) {
 	if err := h.initRedaction(); err != nil {
 		return msg, err

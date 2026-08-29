@@ -17,6 +17,11 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+// Stage 构造一个流水线阶段：从输入通道读取，用至多 maxWorkers 个协程并发处理，
+// 结果与错误分别送往两个输出通道。
+//
+// 收尾时用 context.Background() 而非传入的 ctx 等待工人结束：
+// ctx 已取消的情况下仍需等所有工人退出，否则会在它们写入前就关闭输出通道从而 panic。
 func Stage[In any, Out any](
 	ctx context.Context,
 	maxWorkers int,
@@ -66,6 +71,7 @@ func Stage[In any, Out any](
 	return outputChannel, errorChannel
 }
 
+// Sink 是流水线终点，只关心错误，结果直接丢弃。
 func Sink[In any](
 	ctx context.Context,
 	maxWorkers int,
@@ -86,6 +92,7 @@ func Sink[In any](
 	return errC
 }
 
+// Merge 扇入：把多个通道合并为一个。
 func Merge[T any](ctx context.Context, cs ...<-chan T) <-chan T {
 	var wg sync.WaitGroup
 	out := make(chan T)
@@ -114,6 +121,7 @@ func Merge[T any](ctx context.Context, cs ...<-chan T) <-chan T {
 	return out
 }
 
+// SendOrDone 发送数据，context 取消时放弃，避免在无人接收时永久阻塞。
 func SendOrDone[T any](ctx context.Context, out chan<- T, v T) {
 	select {
 	case out <- v:
@@ -122,6 +130,7 @@ func SendOrDone[T any](ctx context.Context, out chan<- T, v T) {
 	}
 }
 
+// ReadOrDone 包装通道，使其在 context 取消时能及时结束，避免协程泄漏。
 func ReadOrDone[T any](ctx context.Context, in <-chan T) <-chan T {
 	valStream := make(chan T)
 	go func() {
@@ -144,6 +153,8 @@ func ReadOrDone[T any](ctx context.Context, in <-chan T) <-chan T {
 	return valStream
 }
 
+// Tee 把一个通道的数据复制到两个通道。
+// 每轮把已发送的那侧置为 nil，使 select 只等待剩下的一侧，从而两侧都收到同一个值。
 func Tee[T any](ctx context.Context, in <-chan T) (<-chan T, <-chan T) {
 	out1 := make(chan T)
 	out2 := make(chan T)
@@ -166,6 +177,7 @@ func Tee[T any](ctx context.Context, in <-chan T) (<-chan T, <-chan T) {
 	return out1, out2
 }
 
+// FromSlice 把切片转成带缓冲的通道，容量取切片长度故不会阻塞。
 func FromSlice[T any](ctx context.Context, in []T) <-chan T {
 	output := make(chan T, len(in))
 	for _, c := range in {

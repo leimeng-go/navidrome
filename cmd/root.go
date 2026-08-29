@@ -24,6 +24,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// 根命令与全局标志。
 var (
 	cfgFile  string
 	noBanner bool
@@ -57,6 +58,7 @@ func Execute() {
 	}
 }
 
+// preRun 在任何子命令执行前加载配置并打印横幅。
 func preRun() {
 	if !noBanner {
 		println(resources.Banner())
@@ -64,6 +66,7 @@ func preRun() {
 	conf.Load(noBanner)
 }
 
+// postRun 在主命令结束后输出退出日志。
 func postRun() {
 	log.Info("Navidrome stopped, bye.")
 }
@@ -71,6 +74,10 @@ func postRun() {
 // runNavidrome is the main entry point for the Navidrome server. It starts all the services and blocks.
 // If any of the services returns an error, it will log it and exit. If the process receives a signal to exit,
 // it will cancel the context and exit gracefully.
+//
+// runNavidrome 是服务主入口。
+// 各子服务用 errgroup 并行启动并共享同一 context：
+// 任一服务出错即取消 context，其余服务随之退出，实现整体优雅停机。
 func runNavidrome(ctx context.Context) {
 	defer db.Init(ctx)()
 
@@ -97,6 +104,7 @@ func runNavidrome(ctx context.Context) {
 }
 
 // mainContext returns a context that is cancelled when the process receives a signal to exit.
+// mainContext 监听退出信号，收到后取消 context 触发优雅停机。
 func mainContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(ctx,
 		os.Interrupt,
@@ -107,6 +115,7 @@ func mainContext(ctx context.Context) (context.Context, context.CancelFunc) {
 }
 
 // startServer starts the Navidrome web server, adding all the necessary routers.
+// startServer 装载各路由并启动 HTTP 服务，可选组件按配置开关挂载。
 func startServer(ctx context.Context) func() error {
 	return func() error {
 		a := CreateServer()
@@ -136,6 +145,7 @@ func startServer(ctx context.Context) func() error {
 }
 
 // schedulePeriodicScan schedules a periodic scan of the music library, if configured.
+// schedulePeriodicScan 注册周期扫描任务。
 func schedulePeriodicScan(ctx context.Context) func() error {
 	return func() error {
 		schedule := conf.Server.Scanner.Schedule
@@ -161,6 +171,8 @@ func schedulePeriodicScan(ctx context.Context) func() error {
 	}
 }
 
+// pidHashChanged 判断持久化 ID 的生成规则是否已变更。
+// 规则一变，既有 ID 全部失效，必须整库重扫才能重新对上号。
 func pidHashChanged(ds model.DataStore) (bool, error) {
 	pidAlbum, err := ds.Property(context.Background()).DefaultGet(consts.PIDAlbumKey, "")
 	if err != nil {
@@ -174,6 +186,10 @@ func pidHashChanged(ds model.DataStore) (bool, error) {
 }
 
 // runInitialScan runs an initial scan of the music library if needed.
+//
+// runInitialScan 按需执行启动扫描。四种情形需要扫描：
+// 显式配置、上次扫描中断、迁移后要求全量、PID 规则变更。
+// 先等 2 秒，让服务先起来响应请求，避免启动即被扫描占满资源。
 func runInitialScan(ctx context.Context) func() error {
 	return func() error {
 		ds := CreateDataStore()
@@ -219,6 +235,7 @@ func runInitialScan(ctx context.Context) func() error {
 	}
 }
 
+// startScanWatcher 启动音乐目录监听，实现文件变动后的自动扫描。
 func startScanWatcher(ctx context.Context) func() error {
 	return func() error {
 		if conf.Server.Scanner.WatcherWait == 0 {
@@ -234,6 +251,7 @@ func startScanWatcher(ctx context.Context) func() error {
 	}
 }
 
+// schedulePeriodicBackup 注册周期备份任务，备份后顺带按保留策略清理旧备份。
 func schedulePeriodicBackup(ctx context.Context) func() error {
 	return func() error {
 		schedule := conf.Server.Backup.Schedule
@@ -269,6 +287,8 @@ func schedulePeriodicBackup(ctx context.Context) func() error {
 	}
 }
 
+// scheduleDBOptimizer 注册数据库优化任务。
+// 扫描期间跳过：两者都重度占用数据库，同时进行会互相拖慢甚至锁冲突。
 func scheduleDBOptimizer(ctx context.Context) func() error {
 	return func() error {
 		log.Info(ctx, "Scheduling DB optimizer", "schedule", consts.OptimizeDBSchedule)
