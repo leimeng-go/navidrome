@@ -31,6 +31,7 @@ import (
 	"github.com/tetratelabs/wazero"
 )
 
+// 插件可声明的能力类型，对应 manifest 中的 capabilities 字段。
 const (
 	CapabilityMetadataAgent       = "MetadataAgent"
 	CapabilityScrobbler           = "Scrobbler"
@@ -40,8 +41,11 @@ const (
 )
 
 // pluginCreators maps capability types to their respective creator functions
+// pluginConstructor 是各能力适配器的构造函数签名。
 type pluginConstructor func(wasmPath, pluginID string, m *managerImpl, runtime api.WazeroNewRuntime, mc wazero.ModuleConfig) WasmPlugin
 
+// pluginCreators 按能力类型分发适配器构造函数。
+// LifecycleManagement 不在其中：它只是初始化钩子，不对外暴露调用接口。
 var pluginCreators = map[string]pluginConstructor{
 	CapabilityMetadataAgent:     newWasmMediaAgent,
 	CapabilityScrobbler:         newWasmScrobblerPlugin,
@@ -55,6 +59,8 @@ type WasmPlugin interface {
 	PluginID() string
 }
 
+// plugin 保存一个已注册插件的元信息与运行时配置。
+// WASM 编译耗时较长，故放到后台进行，compilationReady 用于让调用方等待编译完成。
 type plugin struct {
 	ID               string
 	Path             string
@@ -67,6 +73,8 @@ type plugin struct {
 	compilationErr   error
 }
 
+// waitForCompilation 阻塞等待插件编译完成。
+// 设超时是为了避免某个插件编译卡死时拖垮所有调用方。
 func (p *plugin) waitForCompilation() error {
 	timeout := pluginCompilationTimeout()
 	select {
@@ -82,8 +90,10 @@ func (p *plugin) waitForCompilation() error {
 	return p.compilationErr
 }
 
+// SubsonicRouter 让插件可以回调服务端自身的 Subsonic API。
 type SubsonicRouter http.Handler
 
+// Manager 管理插件的发现、编译、注册与加载。
 type Manager interface {
 	SetSubsonicRouter(router SubsonicRouter)
 	EnsureCompiled(name string) error
@@ -109,6 +119,8 @@ type managerImpl struct {
 }
 
 // GetManager returns the singleton instance of managerImpl
+// GetManager 返回插件管理器单例。未启用插件时返回空实现，
+// 让调用方无需到处判断开关。
 func GetManager(ds model.DataStore, metrics metrics.Metrics) Manager {
 	if !conf.Server.Plugins.Enabled {
 		return &noopManager{}
@@ -135,12 +147,19 @@ func createManager(ds model.DataStore, metrics metrics.Metrics) *managerImpl {
 }
 
 // SetSubsonicRouter sets the SubsonicRouter after managerImpl initialization
+// SetSubsonicRouter 在管理器创建后再注入路由，解决二者的循环依赖。
+// 用原子指针存放，因为注入与插件调用可能并发发生。
 func (m *managerImpl) SetSubsonicRouter(router SubsonicRouter) {
 	m.subsonicRouter.Store(&router)
 }
 
 // registerPlugin adds a plugin to the registry with the given parameters
 // Used internally by ScanPlugins to register plugins
+//
+// registerPlugin 注册插件并为其每个能力创建适配器。
+// 每个插件拥有独立的 wazero 运行时，宿主函数按 manifest 声明的权限裁剪，
+// 未授权的能力对该插件根本不存在。
+// 插件目录是符号链接则视为开发模式，仅用于日志区分。
 func (m *managerImpl) registerPlugin(pluginID, pluginDir, wasmPath string, manifest *schema.PluginManifest) *plugin {
 	// Create custom runtime function
 	customRuntime := m.createRuntime(pluginID, manifest.Permissions)
@@ -195,6 +214,8 @@ func (m *managerImpl) registerPlugin(pluginID, pluginDir, wasmPath string, manif
 }
 
 // initializePluginIfNeeded calls OnInit on plugins that implement LifecycleManagement
+// initializePluginIfNeeded 调用插件的 OnInit。
+// 初始化失败即注销该插件：带着半初始化状态运行只会产生难以排查的问题。
 func (m *managerImpl) initializePluginIfNeeded(plugin *plugin) {
 	// Skip if already initialized
 	if m.lifecycle.isInitialized(plugin) {
@@ -210,6 +231,7 @@ func (m *managerImpl) initializePluginIfNeeded(plugin *plugin) {
 }
 
 // unregisterPlugin removes a plugin from the manager
+// unregisterPlugin 注销插件并清理其适配器与初始化状态。
 func (m *managerImpl) unregisterPlugin(pluginID string) {
 	m.pluginsMu.Lock()
 	defer m.pluginsMu.Unlock()
@@ -233,6 +255,10 @@ func (m *managerImpl) unregisterPlugin(pluginID string) {
 }
 
 // ScanPlugins scans the plugins directory, discovers all valid plugins, and registers them for use.
+//
+// ScanPlugins 重新扫描插件目录。
+// 编译与初始化放到后台 goroutine，避免阻塞启动流程；
+// 但必须等全部注册完成后再启动，否则初始化失败触发的注销会与注册竞争。
 func (m *managerImpl) ScanPlugins() {
 	// Clear existing plugins
 	m.pluginsMu.Lock()
@@ -299,6 +325,7 @@ func (m *managerImpl) ScanPlugins() {
 }
 
 // PluginList returns a map of all registered plugins with their manifests
+// PluginList 返回所有已注册插件及其 manifest。
 func (m *managerImpl) PluginList() map[string]schema.PluginManifest {
 	m.pluginsMu.RLock()
 	defer m.pluginsMu.RUnlock()
@@ -313,6 +340,7 @@ func (m *managerImpl) PluginList() map[string]schema.PluginManifest {
 }
 
 // PluginNames returns the folder names of all plugins that implement the specified capability
+// PluginNames 返回实现了指定能力的插件名。
 func (m *managerImpl) PluginNames(capability string) []string {
 	m.pluginsMu.RLock()
 	defer m.pluginsMu.RUnlock()
@@ -329,6 +357,7 @@ func (m *managerImpl) PluginNames(capability string) []string {
 	return names
 }
 
+// getPlugin 同时取出插件信息与对应能力的适配器。
 func (m *managerImpl) getPlugin(name string, capability string) (*plugin, WasmPlugin, error) {
 	m.pluginsMu.RLock()
 	defer m.pluginsMu.RUnlock()
@@ -345,6 +374,8 @@ func (m *managerImpl) getPlugin(name string, capability string) (*plugin, WasmPl
 }
 
 // LoadPlugin instantiates and returns a plugin by folder name
+// LoadPlugin 按名称与能力取出插件适配器，必要时等待编译完成。
+// 出错只记日志并返回 nil：单个插件不可用不应影响主流程。
 func (m *managerImpl) LoadPlugin(name string, capability string) WasmPlugin {
 	info, adapter, err := m.getPlugin(name, capability)
 	if err != nil {
@@ -402,6 +433,7 @@ func (m *managerImpl) LoadScrobbler(name string) (scrobbler.Scrobbler, bool) {
 	return s, ok
 }
 
+// noopManager 是插件功能关闭时的空实现。
 type noopManager struct{}
 
 func (n noopManager) SetSubsonicRouter(router SubsonicRouter) {}

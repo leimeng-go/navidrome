@@ -9,6 +9,7 @@ import (
 )
 
 // newWasmSchedulerCallback creates a new adapter for a SchedulerCallback plugin
+// newWasmSchedulerCallback 创建定时回调适配器。
 func newWasmSchedulerCallback(wasmPath, pluginID string, m *managerImpl, runtime api.WazeroNewRuntime, mc wazero.ModuleConfig) WasmPlugin {
 	loader, err := api.NewSchedulerCallbackPlugin(context.Background(), api.WazeroRuntime(runtime), api.WazeroModuleConfig(mc))
 	if err != nil {

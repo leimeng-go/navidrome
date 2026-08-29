@@ -14,6 +14,7 @@ import (
 )
 
 // pluginLifecycleManager tracks which plugins have been initialized and manages their lifecycle
+// pluginLifecycleManager 记录插件的初始化状态，确保 OnInit 只执行一次。
 type pluginLifecycleManager struct {
 	plugins sync.Map // string -> bool
 	config  map[string]map[string]string
@@ -21,6 +22,7 @@ type pluginLifecycleManager struct {
 }
 
 // newPluginLifecycleManager creates a new plugin lifecycle manager
+// newPluginLifecycleManager 创建生命周期管理器，配置在此拷贝一份以隔离后续变更。
 func newPluginLifecycleManager(metrics metrics.Metrics) *pluginLifecycleManager {
 	config := maps.Clone(conf.Server.PluginConfig)
 	return &pluginLifecycleManager{
@@ -30,6 +32,8 @@ func newPluginLifecycleManager(metrics metrics.Metrics) *pluginLifecycleManager 
 }
 
 // isInitialized checks if a plugin has been initialized
+// isInitialized 判断插件是否已初始化。
+// 键含版本号，插件升级后视为新插件，会重新执行初始化。
 func (m *pluginLifecycleManager) isInitialized(plugin *plugin) bool {
 	key := plugin.ID + consts.Zwsp + plugin.Manifest.Version
 	value, exists := m.plugins.Load(key)
@@ -49,6 +53,7 @@ func (m *pluginLifecycleManager) clearInitialized(plugin *plugin) {
 }
 
 // callOnInit calls the OnInit method on a plugin that implements LifecycleManagement
+// callOnInit 调用插件的 OnInit，并把该插件的用户配置一并传入。
 func (m *pluginLifecycleManager) callOnInit(plugin *plugin) error {
 	ctx := context.Background()
 	log.Debug("Initializing plugin", "name", plugin.ID)

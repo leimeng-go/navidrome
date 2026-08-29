@@ -7,6 +7,7 @@ import (
 )
 
 // WebSocketPermissions represents granular WebSocket access permissions for plugins
+// webSocketPermissions 描述插件可连接的 WebSocket 地址白名单。
 type webSocketPermissions struct {
 	*networkPermissionsBase
 	AllowedUrls []string `json:"allowedUrls"`
@@ -14,6 +15,7 @@ type webSocketPermissions struct {
 }
 
 // parseWebSocketPermissions extracts WebSocket permissions from the schema
+// parseWebSocketPermissions 解析权限，白名单同样不可为空（默认拒绝）。
 func parseWebSocketPermissions(permData *schema.PluginManifestPermissionsWebsocket) (*webSocketPermissions, error) {
 	if len(permData.AllowedUrls) == 0 {
 		return nil, fmt.Errorf("allowedUrls must contain at least one URL pattern")
@@ -29,6 +31,7 @@ func parseWebSocketPermissions(permData *schema.PluginManifestPermissionsWebsock
 }
 
 // IsConnectionAllowed checks if a WebSocket connection is allowed
+// IsConnectionAllowed 校验连接地址，同样精确匹配优先于通配匹配。
 func (w *webSocketPermissions) IsConnectionAllowed(requestURL string) error {
 	if _, err := checkURLPolicy(requestURL, w.AllowLocalNetwork); err != nil {
 		return err
@@ -60,6 +63,7 @@ func (w *webSocketPermissions) IsConnectionAllowed(requestURL string) error {
 }
 
 // containsWildcard checks if a URL pattern contains wildcard characters
+// containsWildcard 判断模式中是否含通配符。
 func containsWildcard(pattern string) bool {
 	if pattern == "*" {
 		return true

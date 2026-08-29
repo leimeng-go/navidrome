@@ -9,12 +9,14 @@ import (
 )
 
 // NetworkPermissionsBase contains common functionality for network-based permissions
+// networkPermissionsBase 是 HTTP 与 WebSocket 权限的公共部分。
 type networkPermissionsBase struct {
 	Reason            string `json:"reason"`
 	AllowLocalNetwork bool   `json:"allowLocalNetwork,omitempty"`
 }
 
 // URLMatcher provides URL pattern matching functionality
+// urlMatcher 负责 URL 与通配模式的匹配。
 type urlMatcher struct{}
 
 // newURLMatcher creates a new URL matcher instance
@@ -23,6 +25,7 @@ func newURLMatcher() *urlMatcher {
 }
 
 // checkURLPolicy performs common checks for a URL against network policies.
+// checkURLPolicy 做与具体协议无关的通用校验。
 func checkURLPolicy(requestURL string, allowLocalNetwork bool) (*url.URL, error) {
 	parsedURL, err := url.Parse(requestURL)
 	if err != nil {
@@ -39,6 +42,10 @@ func checkURLPolicy(requestURL string, allowLocalNetwork bool) (*url.URL, error)
 }
 
 // MatchesURLPattern checks if a URL matches a given pattern
+//
+// MatchesURLPattern 判断 URL 是否匹配模式，按 scheme/host/path 分段比对。
+// 模式不是合法 URL 时退化为整串正则匹配。
+// 仅含域名通配（无路径）的模式视为放行该域名下的任意路径。
 func (m *urlMatcher) MatchesURLPattern(requestURL, pattern string) bool {
 	// Handle wildcard pattern
 	if pattern == "*" {
@@ -86,6 +93,7 @@ func (m *urlMatcher) MatchesURLPattern(requestURL, pattern string) bool {
 }
 
 // urlPatternToRegex converts a URL pattern with wildcards to a regex pattern
+// urlPatternToRegex 把通配模式转成锚定的正则，其余字符全部转义以免被当作正则元字符。
 func (m *urlMatcher) urlPatternToRegex(pattern string) string {
 	// Escape special regex characters except *
 	escaped := regexp.QuoteMeta(pattern)
@@ -100,6 +108,9 @@ func (m *urlMatcher) urlPatternToRegex(pattern string) string {
 }
 
 // matchesHost checks if a host matches a pattern with wildcard support
+// matchesHost 匹配主机名。
+// 通配符同时按 IP 段与域名两种语义各试一次，因为 * 在
+// 192.168.*.* 与 *.example.com 中的含义不同。
 func (m *urlMatcher) matchesHost(host, pattern string) bool {
 	if pattern == "" {
 		return true
@@ -129,6 +140,7 @@ func (m *urlMatcher) matchesHost(host, pattern string) bool {
 }
 
 // matchesPath checks if a path matches a pattern with wildcard support
+// matchesPath 匹配路径，/* 结尾表示前缀匹配。
 func (m *urlMatcher) matchesPath(path, pattern string) bool {
 	// Normalize empty paths to "/"
 	if path == "" {
@@ -155,6 +167,8 @@ func (m *urlMatcher) matchesPath(path, pattern string) bool {
 }
 
 // CheckLocalNetwork checks if the URL is accessing local network resources
+// checkLocalNetwork 阻止访问本机与内网地址，这是防 SSRF 的基本措施：
+// 否则插件可借服务器身份探测内网服务或读取云元数据接口。
 func checkLocalNetwork(parsedURL *url.URL) error {
 	host := parsedURL.Hostname()
 
@@ -173,6 +187,8 @@ func checkLocalNetwork(parsedURL *url.URL) error {
 }
 
 // IsPrivateIP checks if an IP is loopback, private, or link-local (IPv4/IPv6).
+// isPrivateIP 判断是否为回环、私有或链路本地地址。
+// 链路本地需单独判断：云平台的元数据服务常位于 169.254.169.254。
 func isPrivateIP(ip net.IP) bool {
 	if ip == nil {
 		return false

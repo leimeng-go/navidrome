@@ -8,9 +8,11 @@ import (
 )
 
 // Maximum number of HTTP redirects allowed for plugin requests
+// httpMaxRedirects 限制重定向次数，防止插件被重定向链拖住或绕过限制。
 const httpMaxRedirects = 5
 
 // HTTPPermissions represents granular HTTP access permissions for plugins
+// httpPermissions 描述插件可访问的 URL 模式及其允许的方法。
 type httpPermissions struct {
 	*networkPermissionsBase
 	AllowedUrls map[string][]string `json:"allowedUrls"`
@@ -18,6 +20,8 @@ type httpPermissions struct {
 }
 
 // parseHTTPPermissions extracts HTTP permissions from the schema
+// parseHTTPPermissions 解析 HTTP 权限声明。
+// 白名单不可为空：默认拒绝一切访问，插件必须显式列出所需地址。
 func parseHTTPPermissions(permData *schema.PluginManifestPermissionsHttp) (*httpPermissions, error) {
 	base := &networkPermissionsBase{
 		AllowLocalNetwork: permData.AllowLocalNetwork,
@@ -44,6 +48,10 @@ func parseHTTPPermissions(permData *schema.PluginManifestPermissionsHttp) (*http
 }
 
 // IsRequestAllowed checks if a specific network request is allowed by the permissions
+//
+// IsRequestAllowed 校验请求是否被允许。
+// 先做本地网络检查（防 SSRF 探测内网），再匹配白名单。
+// 精确匹配优先于通配匹配，使更具体的规则能覆盖宽泛规则。
 func (p *httpPermissions) IsRequestAllowed(requestURL, operation string) error {
 	if _, err := checkURLPolicy(requestURL, p.AllowLocalNetwork); err != nil {
 		return err

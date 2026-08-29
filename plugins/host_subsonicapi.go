@@ -39,6 +39,7 @@ type subsonicAPIServiceImpl struct {
 	permissions *subsonicAPIPermissions
 }
 
+// newSubsonicAPIService 创建 Subsonic API 宿主服务。
 func newSubsonicAPIService(pluginID string, router *SubsonicRouter, ds model.DataStore, permissions *schema.PluginManifestPermissionsSubsonicapi) subsonicapi.SubsonicAPIService {
 	return &subsonicAPIServiceImpl{
 		pluginID:    pluginID,
@@ -48,6 +49,10 @@ func newSubsonicAPIService(pluginID string, router *SubsonicRouter, ds model.Dat
 	}
 }
 
+// Call 以内部请求方式调用自身的 Subsonic API。
+//
+// 不走网络而是直接调用路由并用 ResponseRecorder 收集响应，省去自我认证与网络开销。
+// 客户端标识、版本、格式三个参数由宿主强制设定，插件无法伪造。
 func (s *subsonicAPIServiceImpl) Call(ctx context.Context, req *subsonicapi.CallRequest) (*subsonicapi.CallResponse, error) {
 	if s.router == nil {
 		return &subsonicapi.CallResponse{
@@ -121,6 +126,8 @@ func (s *subsonicAPIServiceImpl) Call(ctx context.Context, req *subsonicapi.Call
 	}, nil
 }
 
+// checkPermissions 校验插件是否可以该用户身份调用 API。
+// 默认禁止以管理员身份调用：否则插件可借此获得完全控制权。
 func (s *subsonicAPIServiceImpl) checkPermissions(ctx context.Context, username string) error {
 	if s.permissions == nil {
 		return nil
@@ -148,12 +155,14 @@ func (s *subsonicAPIServiceImpl) checkPermissions(ctx context.Context, username 
 	return nil
 }
 
+// subsonicAPIPermissions 限定插件可使用的用户身份。
 type subsonicAPIPermissions struct {
 	AllowedUsernames []string
 	AllowAdmins      bool
 	usernameMap      map[string]struct{}
 }
 
+// parseSubsonicAPIPermissions 解析权限，用户名统一转小写以便忽略大小写比对。
 func parseSubsonicAPIPermissions(data *schema.PluginManifestPermissionsSubsonicapi) *subsonicAPIPermissions {
 	if data == nil {
 		return &subsonicAPIPermissions{}

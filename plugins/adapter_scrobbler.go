@@ -12,6 +12,7 @@ import (
 	"github.com/tetratelabs/wazero"
 )
 
+// newWasmScrobblerPlugin 创建播放上报插件适配器。
 func newWasmScrobblerPlugin(wasmPath, pluginID string, m *managerImpl, runtime api.WazeroNewRuntime, mc wazero.ModuleConfig) WasmPlugin {
 	loader, err := api.NewScrobblerPlugin(context.Background(), api.WazeroRuntime(runtime), api.WazeroModuleConfig(mc))
 	if err != nil {
@@ -32,6 +33,8 @@ func newWasmScrobblerPlugin(wasmPath, pluginID string, m *managerImpl, runtime a
 	}
 }
 
+// wasmScrobblerPlugin 把插件适配为 scrobbler.Scrobbler。
+// 用户名从上下文取，插件据此关联自己那边的账号。
 type wasmScrobblerPlugin struct {
 	*baseCapability[api.Scrobbler, *api.ScrobblerPlugin]
 }
@@ -111,6 +114,7 @@ func (w *wasmScrobblerPlugin) Scrobble(ctx context.Context, userId string, s scr
 	return err
 }
 
+// toTrackInfo 把媒体文件转换为插件侧的曲目结构，展开艺人与专辑艺人列表。
 func (w *wasmScrobblerPlugin) toTrackInfo(track *model.MediaFile, position int) *api.TrackInfo {
 	artists := make([]*api.Artist, 0, len(track.Participants[model.RoleArtist]))
 

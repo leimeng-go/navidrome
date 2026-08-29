@@ -30,6 +30,8 @@ import (
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
+// maxParallelCompilations 限制并发编译数：WASM 编译很吃 CPU，
+// 放开并发会在启动时抢占扫描与请求处理的资源。
 const maxParallelCompilations = 2 // Limit to 2 concurrent compilations
 
 var (
@@ -41,6 +43,11 @@ var (
 
 // createRuntime returns a function that creates a new wazero runtime and instantiates the required host functions
 // based on the given plugin permissions
+//
+// createRuntime 返回创建运行时的工厂函数。
+// 每个插件共享一个运行时（编译结果与实例池可复用），
+// 但每次调用都套一层 scopedRuntime，使 Close 只关闭本次的模块实例而非整个运行时。
+// 用 LoadOrStore 原子写入，避免并发首次创建时产生多个运行时。
 func (m *managerImpl) createRuntime(pluginID string, permissions schema.PluginManifestPermissions) api.WazeroNewRuntime {
 	return func(ctx context.Context) (wazero.Runtime, error) {
 		// Check if runtime already exists
@@ -70,6 +77,7 @@ func (m *managerImpl) createRuntime(pluginID string, permissions schema.PluginMa
 }
 
 // createCachingRuntime handles the complex logic of setting up a new cachingRuntime
+// createCachingRuntime 创建带编译缓存与实例池的运行时，并装载宿主服务。
 func (m *managerImpl) createCachingRuntime(ctx context.Context, pluginID string, permissions schema.PluginManifestPermissions) (*cachingRuntime, error) {
 	// Get compilation cache
 	compCache, err := getCompilationCache()
@@ -94,6 +102,10 @@ func (m *managerImpl) createCachingRuntime(ctx context.Context, pluginID string,
 }
 
 // setupHostServices configures all the permitted host services for a plugin
+//
+// setupHostServices 按 manifest 声明的权限装载宿主服务。
+// 这是插件沙箱的核心：未授权的服务根本不会注入到运行时，
+// 插件即便调用也只会得到「函数不存在」的链接错误。
 func (m *managerImpl) setupHostServices(ctx context.Context, r wazero.Runtime, pluginID string, permissions schema.PluginManifestPermissions) error {
 	// Define all available host services
 	type hostService struct {
@@ -166,6 +178,10 @@ func (m *managerImpl) setupHostServices(ctx context.Context, r wazero.Runtime, p
 // lower than or equal to maxSize. maxSize should be a human-readable string
 // like "10MB" or "200K". If parsing fails or maxSize is "0", the function is
 // a no-op.
+//
+// purgeCacheBySize 按 LRU（修改时间）清理编译缓存目录直至不超过上限。
+// 遍历中的单个文件错误只记日志跳过，避免个别坏文件导致整体清理失败。
+// 删完文件后顺带清空目录，防止缓存目录堆积大量空壳。
 func purgeCacheBySize(dir, maxSize string) {
 	sizeLimit, err := humanize.ParseBytes(maxSize)
 	if err != nil || sizeLimit == 0 {
@@ -240,6 +256,7 @@ func purgeCacheBySize(dir, maxSize string) {
 }
 
 // getCompilationCache returns the global compilation cache, creating it if necessary
+// getCompilationCache 返回全局编译缓存，首次使用时先做一次容量清理。
 func getCompilationCache() (wazero.CompilationCache, error) {
 	var err error
 	cacheOnce.Do(func() {
@@ -251,11 +268,14 @@ func getCompilationCache() (wazero.CompilationCache, error) {
 }
 
 // newWazeroModuleConfig creates the correct ModuleConfig for plugins
+// newWazeroModuleConfig 配置模块：用 _initialize 而非 _start 作为入口
+// （插件是响应式库而非独立程序），并把插件的 stderr 接到日志系统。
 func newWazeroModuleConfig() wazero.ModuleConfig {
 	return wazero.NewModuleConfig().WithStartFunctions("_initialize").WithStderr(log.Writer())
 }
 
 // pluginCompilationTimeout returns the timeout for plugin compilation
+// pluginCompilationTimeout 返回编译超时，开发环境可覆盖。
 func pluginCompilationTimeout() time.Duration {
 	if conf.Server.DevPluginCompilationTimeout > 0 {
 		return conf.Server.DevPluginCompilationTimeout
@@ -264,6 +284,10 @@ func pluginCompilationTimeout() time.Duration {
 }
 
 // precompilePlugin compiles the WASM module in the background and updates the pluginState.
+//
+// precompilePlugin 后台预编译插件。
+// 无论成功失败都必须关闭 compilationReady，否则等待方会一直阻塞到超时。
+// 通过信号量限制并发编译数量。
 func precompilePlugin(p *plugin) {
 	compileSemaphore <- struct{}{}
 	defer func() { <-compileSemaphore }()
@@ -303,6 +327,10 @@ func precompilePlugin(p *plugin) {
 }
 
 // loadHostLibrary loads the given host library and returns its exported functions
+//
+// loadHostLibrary 借一个临时运行时把宿主服务实例化，只为取出其函数定义。
+// 因为生成代码固定注册到 env 模块，多个服务无法直接共存于同一运行时，
+// 只能先分别提取再由 combineLibraries 合并。
 func loadHostLibrary[S any](
 	ctx context.Context,
 	instantiateFn func(context.Context, wazero.Runtime, S) error,
@@ -317,6 +345,8 @@ func loadHostLibrary[S any](
 }
 
 // combineLibraries combines the given host libraries into a single "env" module
+// combineLibraries 把各宿主服务的函数合并成单个 env 模块，
+// 因为 WASM 模块只能导入一个同名宿主模块。
 func combineLibraries(ctx context.Context, r wazero.Runtime, libs ...map[string]wazeroapi.FunctionDefinition) error {
 	// Merge the libraries
 	hostLib := map[string]wazeroapi.FunctionDefinition{}
@@ -360,6 +390,9 @@ const (
 )
 
 // cachedCompiledModule encapsulates a compiled WebAssembly module with TTL management
+// cachedCompiledModule 缓存编译结果并按 TTL 过期。
+// 编译产物占用内存较大，长期不用的插件应及时释放。
+// 以 WASM 字节的 MD5 作为键，插件文件更新后自动失效。
 type cachedCompiledModule struct {
 	module     wazero.CompiledModule
 	hash       [16]byte
@@ -370,6 +403,7 @@ type cachedCompiledModule struct {
 }
 
 // newCachedCompiledModule creates a new cached compiled module with TTL management
+// newCachedCompiledModule 创建带 TTL 定时器的缓存项。
 func newCachedCompiledModule(module wazero.CompiledModule, wasmBytes []byte, pluginID string) *cachedCompiledModule {
 	c := &cachedCompiledModule{
 		module:     module,
@@ -386,6 +420,7 @@ func newCachedCompiledModule(module wazero.CompiledModule, wasmBytes []byte, plu
 
 // get returns the cached module if the hash matches, nil otherwise
 // Also resets the TTL timer on successful access
+// get 命中时顺带续期，使活跃插件不会被 TTL 淘汰。
 func (c *cachedCompiledModule) get(wasmHash [16]byte) wazero.CompiledModule {
 	c.mu.Lock() // Use write lock because we modify state in resetTimer
 	defer c.mu.Unlock()
@@ -445,6 +480,8 @@ func (c *cachedCompiledModule) close(ctx context.Context) {
 }
 
 // pooledModule wraps a wazero Module and returns it to the pool when closed.
+// pooledModule 把 Close 语义改为「归还实例池」，
+// 使调用方沿用惯常的 defer Close 写法即可实现复用。
 type pooledModule struct {
 	wazeroapi.Module
 	pool   *wasmInstancePool[wazeroapi.Module]
@@ -468,6 +505,7 @@ func (m *pooledModule) IsClosed() bool {
 }
 
 // newScopedRuntime creates a new scopedRuntime that wraps the given runtime
+// newScopedRuntime 包装共享运行时。
 func newScopedRuntime(runtime wazero.Runtime) *scopedRuntime {
 	return &scopedRuntime{Runtime: runtime}
 }
@@ -505,6 +543,7 @@ func (w *scopedRuntime) CloseWithExitCode(ctx context.Context, exitCode uint32) 
 }
 
 // GetCachingRuntime returns the underlying cachingRuntime for internal use
+// GetCachingRuntime 取出底层的缓存运行时，供预编译等内部流程使用。
 func (w *scopedRuntime) GetCachingRuntime() *cachingRuntime {
 	if cr, ok := w.Runtime.(*cachingRuntime); ok {
 		return cr
@@ -534,6 +573,7 @@ type cachingRuntime struct {
 	compilationMu sync.Mutex
 }
 
+// newCachingRuntime 创建缓存运行时，实例池延迟到首次实例化时建立。
 func newCachingRuntime(runtime wazero.Runtime, pluginID string) *cachingRuntime {
 	return &cachingRuntime{
 		Runtime:  runtime,
@@ -541,6 +581,8 @@ func newCachingRuntime(runtime wazero.Runtime, pluginID string) *cachingRuntime 
 	}
 }
 
+// initPool 惰性初始化实例池：池的工厂函数依赖编译结果与模块配置，
+// 只有到首次 InstantiateModule 时才具备。
 func (r *cachingRuntime) initPool(code wazero.CompiledModule, config wazero.ModuleConfig) {
 	r.poolInitOnce.Do(func() {
 		r.pool = newWasmInstancePool[wazeroapi.Module](r.pluginID, defaultPoolSize, defaultMaxConcurrentInstances, defaultGetTimeout, defaultInstanceTTL, func(ctx context.Context) (wazeroapi.Module, error) {
@@ -589,6 +631,9 @@ func (r *cachingRuntime) setCachedModule(module wazero.CompiledModule, wasmBytes
 
 // CompileModule checks if the provided bytes match our cached hash and returns
 // the cached compiled module if so, avoiding both file read and compilation.
+//
+// CompileModule 采用双重检查：先无锁读缓存（命中是常态，避免锁竞争），
+// 未命中再加锁并重查一次，防止并发下重复编译同一模块。
 func (r *cachingRuntime) CompileModule(ctx context.Context, wasmBytes []byte) (wazero.CompiledModule, error) {
 	incomingHash := md5.Sum(wasmBytes)
 

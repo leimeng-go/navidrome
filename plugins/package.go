@@ -14,6 +14,7 @@ import (
 )
 
 // PluginPackage represents a Navidrome Plugin Package (.ndp file)
+// PluginPackage 是插件分发包（.ndp，本质是 zip）的解析结果。
 type PluginPackage struct {
 	ManifestJSON []byte
 	Manifest     *schema.PluginManifest
@@ -22,6 +23,12 @@ type PluginPackage struct {
 }
 
 // ExtractPackage extracts a .ndp file to the target directory
+//
+// ExtractPackage 解压插件包。
+// 安全上做三重防护：
+//  1. 拒绝含 .. 或绝对路径的条目，并复核解压后的绝对路径仍在目标目录内，防目录穿越（Zip Slip）；
+//  2. 限制单文件大小，防解压炸弹；
+//  3. 解压出的文件仅属主可读写。
 func ExtractPackage(ndpPath, targetDir string) error {
 	r, err := zip.OpenReader(ndpPath)
 	if err != nil {
@@ -111,6 +118,7 @@ func ExtractPackage(ndpPath, targetDir string) error {
 }
 
 // LoadPackage loads and validates an .ndp file without extracting it
+// LoadPackage 在不落盘的情况下读取并校验插件包，要求必须含 manifest.json 与 plugin.wasm。
 func LoadPackage(ndpPath string) (*PluginPackage, error) {
 	r, err := zip.OpenReader(ndpPath)
 	if err != nil {

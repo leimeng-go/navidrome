@@ -10,6 +10,10 @@ import (
 )
 
 // wasmInstancePool is a generic pool using channels for simplicity and Go idioms
+//
+// wasmInstancePool 复用 WASM 模块实例：实例化开销远大于一次调用，
+// 但实例又不能无限增长（每个都占一块线性内存）。
+// 因此用两层控制：instances 通道做复用池，semaphore 做全局并发上限。
 type wasmInstancePool[T any] struct {
 	name       string
 	new        func(ctx context.Context) (T, error)
@@ -24,11 +28,14 @@ type wasmInstancePool[T any] struct {
 	closed    bool
 }
 
+// poolItem 记录实例与入池时间，用于 TTL 淘汰。
 type poolItem[T any] struct {
 	value   T
 	created time.Time
 }
 
+// newWasmInstancePool 创建实例池。
+// semaphore 预先填满令牌，Get 取令牌、Put 还令牌，以此限制同时存在的实例数。
 func newWasmInstancePool[T any](name string, poolSize int, maxConcurrentInstances int, getTimeout time.Duration, ttl time.Duration, newFn func(ctx context.Context) (T, error)) *wasmInstancePool[T] {
 	p := &wasmInstancePool[T]{
 		name:       name,
@@ -51,10 +58,13 @@ func newWasmInstancePool[T any](name string, poolSize int, maxConcurrentInstance
 	return p
 }
 
+// getInstanceID 以指针地址作为实例标识，仅用于日志追踪。
 func getInstanceID(inst any) string {
 	return fmt.Sprintf("%p", inst) //nolint:govet
 }
 
+// Get 取一个实例：先拿并发令牌，再优先复用池中实例，池空则新建。
+// 新建失败要归还令牌，否则令牌会持续泄漏直至池不可用。
 func (p *wasmInstancePool[T]) Get(ctx context.Context) (T, error) {
 	// First acquire a semaphore slot (concurrent limit)
 	select {
@@ -95,6 +105,10 @@ func (p *wasmInstancePool[T]) Get(ctx context.Context) (T, error) {
 	}
 }
 
+// Put 归还实例。池满或已关闭则直接销毁。
+//
+// 归还令牌用非阻塞写：令牌已满说明该实例并非经 Get 取得
+// （例如预热产生的实例），此时不应再放入令牌，否则会突破并发上限。
 func (p *wasmInstancePool[T]) Put(ctx context.Context, v T) {
 	p.mu.RLock()
 	instances := p.instances
@@ -137,6 +151,7 @@ func (p *wasmInstancePool[T]) Put(ctx context.Context, v T) {
 	}
 }
 
+// Close 关闭池并销毁池中所有实例。
 func (p *wasmInstancePool[T]) Close(ctx context.Context) {
 	p.mu.Lock()
 	if p.closed {
@@ -161,6 +176,7 @@ func (p *wasmInstancePool[T]) Close(ctx context.Context) {
 	}
 }
 
+// cleanupLoop 定期清理过期实例，间隔取 TTL 的三分之一以保证及时性。
 func (p *wasmInstancePool[T]) cleanupLoop() {
 	ticker := time.NewTicker(p.ttl / 3)
 	defer ticker.Stop()
@@ -174,6 +190,8 @@ func (p *wasmInstancePool[T]) cleanupLoop() {
 	}
 }
 
+// cleanupExpired 淘汰超过 TTL 的空闲实例。
+// 做法是整体换掉通道再排空旧通道，避免边遍历边写入造成的竞争。
 func (p *wasmInstancePool[T]) cleanupExpired() {
 	ctx := context.Background()
 	now := time.Now()
@@ -216,6 +234,7 @@ func (p *wasmInstancePool[T]) cleanupExpired() {
 	}
 }
 
+// closeItem 若实例可关闭则关闭之。
 func (p *wasmInstancePool[T]) closeItem(ctx context.Context, v T) {
 	if closer, ok := any(v).(interface{ Close(context.Context) error }); ok {
 		_ = closer.Close(ctx)

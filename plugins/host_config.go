@@ -7,6 +7,8 @@ import (
 	"github.com/navidrome/navidrome/plugins/host/config"
 )
 
+// configServiceImpl 向插件暴露其专属配置。
+// 只返回以该插件 ID 为键的那一段，插件无法读取全局配置或他人配置。
 type configServiceImpl struct {
 	pluginID string
 }

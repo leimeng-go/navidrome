@@ -12,12 +12,15 @@ import (
 	navidsched "github.com/navidrome/navidrome/scheduler"
 )
 
+// 定时任务的两种类型。
 const (
 	ScheduleTypeOneTime   = "one-time"
 	ScheduleTypeRecurring = "recurring"
 )
 
 // ScheduledCallback represents a registered schedule callback
+// ScheduledCallback 记录一个已注册的定时任务。
+// 一次性任务靠 context 取消，周期任务交给 Navidrome 调度器并以 EntryID 撤销。
 type ScheduledCallback struct {
 	ID       string
 	PluginID string
@@ -28,6 +31,7 @@ type ScheduledCallback struct {
 }
 
 // SchedulerHostFunctions implements the scheduler.SchedulerService interface
+// SchedulerHostFunctions 是绑定插件身份的调度宿主函数集。
 type SchedulerHostFunctions struct {
 	ss       *schedulerService
 	pluginID string
@@ -49,6 +53,7 @@ func (s SchedulerHostFunctions) TimeNow(ctx context.Context, req *scheduler.Time
 	return s.ss.timeNow(ctx, req)
 }
 
+// schedulerService 管理所有插件注册的定时任务。
 type schedulerService struct {
 	// Map of schedule IDs to their callback info
 	schedules  map[string]*ScheduledCallback
@@ -58,6 +63,7 @@ type schedulerService struct {
 }
 
 // newSchedulerService creates a new schedulerService instance
+// newSchedulerService 创建调度服务，周期任务复用 Navidrome 全局调度器。
 func newSchedulerService(manager *managerImpl) *schedulerService {
 	return &schedulerService{
 		schedules:  make(map[string]*ScheduledCallback),
@@ -101,6 +107,11 @@ func (s *schedulerService) getScheduleType(id string) string {
 }
 
 // scheduleJob is a helper function that handles the common logic for scheduling jobs
+//
+// scheduleJob 处理注册前的公共逻辑：生成 ID、处理同 ID 覆盖。
+// 任务 ID 加插件前缀，避免不同插件互相覆盖。
+// 旧任务的取消函数只取出不调用：必须等新任务写入映射后再取消，
+// 否则旧任务的清理逻辑会把新任务一并删掉。
 func (s *schedulerService) scheduleJob(pluginID string, scheduleId string, jobType string, payload []byte) (string, *ScheduledCallback, context.CancelFunc, error) {
 	if s.manager == nil {
 		return "", nil, nil, fmt.Errorf("scheduler service not properly initialized")
@@ -148,6 +159,7 @@ func (s *schedulerService) scheduleJob(pluginID string, scheduleId string, jobTy
 }
 
 // scheduleOneTime registers a new one-time scheduled job
+// scheduleOneTime 注册一次性任务。取消旧任务放到 goroutine 中，避免在持锁时死锁。
 func (s *schedulerService) scheduleOneTime(_ context.Context, pluginID string, req *scheduler.ScheduleOneTimeRequest) (*scheduler.ScheduleResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -182,6 +194,7 @@ func (s *schedulerService) scheduleOneTime(_ context.Context, pluginID string, r
 }
 
 // scheduleRecurring registers a new recurring scheduled job
+// scheduleRecurring 注册 cron 周期任务。
 func (s *schedulerService) scheduleRecurring(_ context.Context, pluginID string, req *scheduler.ScheduleRecurringRequest) (*scheduler.ScheduleResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -220,6 +233,7 @@ func (s *schedulerService) scheduleRecurring(_ context.Context, pluginID string,
 }
 
 // cancelSchedule cancels a scheduled job (either one-time or recurring)
+// cancelSchedule 取消任务：先从映射摘除再执行取消，顺序颠倒会引发重复删除。
 func (s *schedulerService) cancelSchedule(_ context.Context, pluginID string, req *scheduler.CancelRequest) (*scheduler.CancelResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -265,6 +279,7 @@ func (s *schedulerService) cancelSchedule(_ context.Context, pluginID string, re
 }
 
 // timeNow returns the current time in multiple formats
+// timeNow 返回宿主当前时间。WASM 沙箱内无法获取真实时区，故由宿主提供。
 func (s *schedulerService) timeNow(_ context.Context, req *scheduler.TimeNowRequest) (*scheduler.TimeNowResponse, error) {
 	now := time.Now()
 
@@ -276,6 +291,7 @@ func (s *schedulerService) timeNow(_ context.Context, req *scheduler.TimeNowRequ
 }
 
 // runOneTimeSchedule handles the one-time schedule execution and callback
+// runOneTimeSchedule 等待延时后触发回调，期间可被 context 取消。
 func (s *schedulerService) runOneTimeSchedule(ctx context.Context, internalScheduleId string, delay time.Duration) {
 	tmr := time.NewTimer(delay)
 	defer tmr.Stop()
@@ -295,6 +311,7 @@ func (s *schedulerService) runOneTimeSchedule(ctx context.Context, internalSched
 }
 
 // executeCallback calls the plugin's OnSchedulerCallback method
+// executeCallback 回调插件。一次性任务在执行前即从映射移除，防止重复触发。
 func (s *schedulerService) executeCallback(ctx context.Context, internalScheduleId string, isRecurring bool) {
 	s.mu.Lock()
 	callback := s.schedules[internalScheduleId]

@@ -10,6 +10,7 @@ import (
 )
 
 // NewWasmMediaAgent creates a new adapter for a MetadataAgent plugin
+// newWasmMediaAgent 创建元数据代理适配器，使 WASM 插件能以普通 agent 身份接入。
 func newWasmMediaAgent(wasmPath, pluginID string, m *managerImpl, runtime api.WazeroNewRuntime, mc wazero.ModuleConfig) WasmPlugin {
 	loader, err := api.NewMetadataAgentPlugin(context.Background(), api.WazeroRuntime(runtime), api.WazeroModuleConfig(mc))
 	if err != nil {
@@ -31,6 +32,7 @@ func newWasmMediaAgent(wasmPath, pluginID string, m *managerImpl, runtime api.Wa
 }
 
 // wasmMediaAgent adapts a MetadataAgent plugin to implement the agents.Interface
+// wasmMediaAgent 把插件适配为 agents.Interface。
 type wasmMediaAgent struct {
 	*baseCapability[api.MetadataAgent, *api.MetadataAgentPlugin]
 }
@@ -39,6 +41,8 @@ func (w *wasmMediaAgent) AgentName() string {
 	return w.id
 }
 
+// mapError 把插件的「未找到 / 未实现」统一映射为 agents.ErrNotFound，
+// 使上层能像对待内置 agent 一样跳过该来源继续查询下一个。
 func (w *wasmMediaAgent) mapError(err error) error {
 	if err != nil && (err.Error() == api.ErrNotFound.Error() || err.Error() == api.ErrNotImplemented.Error()) {
 		return agents.ErrNotFound
@@ -154,6 +158,7 @@ func (w *wasmMediaAgent) GetArtistTopSongs(ctx context.Context, id, artistName, 
 }
 
 // Helper function to convert ExternalImage objects from the API to the agents package
+// convertExternalImages 转换外部图片列表。
 func convertExternalImages(images []*api.ExternalImage) []agents.ExternalImage {
 	result := make([]agents.ExternalImage, 0, len(images))
 	for _, img := range images {

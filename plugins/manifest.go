@@ -14,6 +14,8 @@ import (
 
 // LoadManifest loads and parses the manifest.json file from the given plugin directory.
 // Returns the generated schema.PluginManifest type with full validation and type safety.
+// LoadManifest 读取并解析插件的 manifest.json。
+// 结构体由 JSON Schema 生成，解析即完成校验。
 func LoadManifest(pluginDir string) (*schema.PluginManifest, error) {
 	manifestPath := filepath.Join(pluginDir, "manifest.json")
 	data, err := os.ReadFile(manifestPath)

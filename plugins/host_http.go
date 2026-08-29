@@ -12,6 +12,9 @@ import (
 	hosthttp "github.com/navidrome/navidrome/plugins/host/http"
 )
 
+// httpServiceImpl 是提供给插件的 HTTP 宿主服务。
+// 插件本身在 WASM 沙箱内无法直接联网，所有外部请求都经此代理，
+// 从而能按 manifest 声明的权限逐条审核。
 type httpServiceImpl struct {
 	pluginID    string
 	permissions *httpPermissions
@@ -47,6 +50,12 @@ func (s *httpServiceImpl) Options(ctx context.Context, req *hosthttp.HttpRequest
 	return s.doHttp(ctx, http.MethodOptions, req)
 }
 
+// doHttp 执行一次受控的 HTTP 请求。
+//
+// 请求前先校验 URL 与方法是否在白名单内；重定向目标也要重新校验，
+// 否则插件可用一个合法 URL 跳转到任意地址，绕过权限限制。
+// 网络错误以响应体中的 Error 字段返回而非 Go error，
+// 使插件能自行处理失败而不是整体调用出错。
 func (s *httpServiceImpl) doHttp(ctx context.Context, method string, req *hosthttp.HttpRequest) (*hosthttp.HttpResponse, error) {
 	// Check permissions if they exist
 	if s.permissions != nil {

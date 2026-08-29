@@ -15,6 +15,8 @@ const (
 )
 
 // cacheServiceImpl implements the cache.CacheService interface
+// cacheServiceImpl 向插件提供带 TTL 的内存缓存。
+// 插件实例会被回收复用，无法在自身内存中保持状态，故需宿主提供缓存。
 type cacheServiceImpl struct {
 	pluginID   string
 	defaultTTL time.Duration
@@ -26,6 +28,7 @@ var (
 )
 
 // newCacheService creates a new cacheServiceImpl instance
+// newCacheService 创建缓存服务。底层缓存全局共享，靠键前缀实现插件间隔离。
 func newCacheService(pluginID string) *cacheServiceImpl {
 	initCacheOnce.Do(func() {
 		opts := []ttlcache.Option[string, any]{
@@ -44,11 +47,13 @@ func newCacheService(pluginID string) *cacheServiceImpl {
 }
 
 // mapKey combines the plugin name and a provided key to create a unique cache key.
+// mapKey 加插件前缀，防止插件间读写彼此的缓存。
 func (s *cacheServiceImpl) mapKey(key string) string {
 	return s.pluginID + ":" + key
 }
 
 // getTTL converts seconds to a duration, using default if 0
+// getTTL 秒转时长，非正数用默认值。
 func (s *cacheServiceImpl) getTTL(seconds int64) time.Duration {
 	if seconds <= 0 {
 		return s.defaultTTL
@@ -65,6 +70,8 @@ func setCacheValue[T any](ctx context.Context, cs *cacheServiceImpl, key string,
 }
 
 // getCacheValue is a generic function to get a value from the cache
+// getCacheValue 按类型取值。类型不符视为未命中而非报错，
+// 因为同一键被以不同类型写入属于插件自身的用法问题，不应中断调用。
 func getCacheValue[T any](ctx context.Context, cs *cacheServiceImpl, key string, typeName string) (T, bool, error) {
 	key = cs.mapKey(key)
 	var zero T

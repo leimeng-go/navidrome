@@ -13,6 +13,7 @@ import (
 )
 
 // newBaseCapability creates a new instance of baseCapability with the required parameters.
+// newBaseCapability 创建能力适配器的公共基座。
 func newBaseCapability[S any, P any](wasmPath, id, capability string, m metrics.Metrics, loader P, loadFunc loaderFunc[S, P]) *baseCapability[S, P] {
 	return &baseCapability[S, P]{
 		wasmPath:   wasmPath,
@@ -25,6 +26,7 @@ func newBaseCapability[S any, P any](wasmPath, id, capability string, m metrics.
 }
 
 // LoaderFunc is a generic function type that loads a plugin instance.
+// loaderFunc 抽象各能力生成代码的加载函数。
 type loaderFunc[S any, P any] func(ctx context.Context, loader P, path string) (S, error)
 
 // baseCapability is a generic base implementation for WASM plugins.
@@ -51,6 +53,10 @@ func (w *baseCapability[S, P]) getMetrics() metrics.Metrics {
 }
 
 // getInstance loads a new plugin instance and returns a cleanup function.
+//
+// getInstance 取一个插件实例，并返回配套的清理函数。
+// 即便出错也返回非 nil 的清理函数，免得调用方每次都判空。
+// 清理实为归还实例池（见 pooledModule）。
 func (w *baseCapability[S, P]) getInstance(ctx context.Context, methodName string) (S, func(), error) {
 	start := time.Now()
 	// Add context metadata for tracing
@@ -72,12 +78,16 @@ func (w *baseCapability[S, P]) getInstance(ctx context.Context, methodName strin
 	}, nil
 }
 
+// wasmPlugin 是各能力适配器的内部接口，供 callMethod 泛型调用。
 type wasmPlugin[S any] interface {
 	PluginID() string
 	getInstance(ctx context.Context, methodName string) (S, func(), error)
 	getMetrics() metrics.Metrics
 }
 
+// callMethod 统一封装插件方法调用：注入追踪 ID、管理实例生命周期、
+// 规整错误并上报指标。
+// 未实现的方法不计入指标，否则会把「插件不支持该能力」误报成故障。
 func callMethod[S any, R any](ctx context.Context, wp WasmPlugin, methodName string, fn func(inst S) (R, error)) (R, error) {
 	// Add a unique call ID to the context for tracing
 	ctx = log.NewContext(ctx, "callID", id.NewRandom())
@@ -113,6 +123,7 @@ func callMethod[S any, R any](ctx context.Context, wp WasmPlugin, methodName str
 
 // errorResponse is an interface that defines a method to retrieve an error message.
 // It is automatically implemented (generated) by all plugin responses that have an Error field
+// errorResponse 由所有带 Error 字段的插件响应自动实现。
 type errorResponse interface {
 	GetError() string
 }
@@ -120,6 +131,10 @@ type errorResponse interface {
 // checkErr returns an updated error if the response implements errorResponse and contains an error message.
 // If the response is nil, it returns the original error. Otherwise, it wraps or creates an error as needed.
 // It also maps error strings to their corresponding api.Err* constants.
+//
+// checkErr 把响应体里的错误字段提升为 Go error。
+// 插件通过返回值而非异常报错，故需在此统一转换，
+// 使调用方能用 errors.Is 判断 ErrNotImplemented 等标准错误。
 func checkErr[T any](resp T, err error) (T, error) {
 	if any(resp) == nil {
 		return resp, mapAPIError(err)
@@ -142,6 +157,9 @@ func checkErr[T any](resp T, err error) (T, error) {
 
 // mapAPIError maps error strings to their corresponding api.Err* constants.
 // This is needed as errors from plugins may not be of type api.Error, due to serialization/deserialization.
+//
+// mapAPIError 按错误文本还原为标准错误常量。
+// 错误跨 WASM 边界后只剩字符串，类型信息已丢失，只能靠文本比对恢复。
 func mapAPIError(err error) error {
 	if err == nil {
 		return nil

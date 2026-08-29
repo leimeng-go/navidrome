@@ -16,6 +16,8 @@ import (
 )
 
 // WebSocketConnection represents a WebSocket connection
+// WebSocketConnection 保存一条插件发起的 WebSocket 连接。
+// gorilla 的写操作不支持并发，故用 mu 串行化发送。
 type WebSocketConnection struct {
 	Conn         *gorillaws.Conn
 	PluginName   string
@@ -25,6 +27,8 @@ type WebSocketConnection struct {
 }
 
 // WebSocketHostFunctions implements the websocket.WebSocketService interface
+// WebSocketHostFunctions 是绑定了插件身份与权限的宿主函数集，
+// 使插件只能操作自己创建的连接。
 type WebSocketHostFunctions struct {
 	ws          *websocketService
 	pluginID    string
@@ -48,6 +52,7 @@ func (s WebSocketHostFunctions) Close(ctx context.Context, req *websocket.CloseR
 }
 
 // websocketService implements the WebSocket service functionality
+// websocketService 统一管理所有插件的 WebSocket 连接。
 type websocketService struct {
 	connections map[string]*WebSocketConnection
 	manager     *managerImpl
@@ -63,6 +68,7 @@ func newWebsocketService(manager *managerImpl) *websocketService {
 }
 
 // HostFunctions returns the WebSocketHostFunctions for the given plugin
+// HostFunctions 为指定插件生成其专属的宿主函数集。
 func (s *websocketService) HostFunctions(pluginID string, permissions *webSocketPermissions) WebSocketHostFunctions {
 	return WebSocketHostFunctions{
 		ws:          s,
@@ -101,11 +107,14 @@ func (s *websocketService) getConnection(internalConnectionID string) (*WebSocke
 }
 
 // internalConnectionID builds the internal connection ID from plugin and connection ID
+// internalConnectionID 以插件 ID 为前缀构造内部键，
+// 这样不同插件用相同连接 ID 也不会互相干扰或越权访问。
 func internalConnectionID(pluginName, connectionID string) string {
 	return pluginName + ":" + connectionID
 }
 
 // extractConnectionID extracts the original connection ID from an internal ID
+// extractConnectionID 从内部键还原插件侧可见的连接 ID。
 func extractConnectionID(internalID string) (string, error) {
 	parts := strings.Split(internalID, ":")
 	if len(parts) != 2 {
@@ -115,6 +124,9 @@ func extractConnectionID(internalID string) (string, error) {
 }
 
 // connect establishes a new WebSocket connection
+//
+// connect 按权限校验后建立连接，并启动收消息的 goroutine。
+// 插件未指定连接 ID 时自动生成一个。
 func (s *websocketService) connect(ctx context.Context, pluginID string, req *websocket.ConnectRequest, permissions *webSocketPermissions) (*websocket.ConnectResponse, error) {
 	if s.manager == nil {
 		return nil, fmt.Errorf("websocket service not properly initialized")
@@ -173,6 +185,7 @@ func (s *websocketService) connect(ctx context.Context, pluginID string, req *we
 }
 
 // writeMessage is a helper to send messages to a websocket connection
+// writeMessage 发送消息，加锁保证同一连接的写操作串行。
 func (s *websocketService) writeMessage(pluginID string, connID string, messageType int, data []byte) error {
 	internal := internalConnectionID(pluginID, connID)
 
@@ -208,6 +221,9 @@ func (s *websocketService) sendBinary(ctx context.Context, pluginID string, req 
 }
 
 // close closes a WebSocket connection
+//
+// close 关闭连接：先从表中摘除并通知读协程退出，再发送关闭帧。
+// 关闭帧发送失败只记日志，仍继续关闭底层连接。
 func (s *websocketService) close(ctx context.Context, pluginID string, req *websocket.CloseRequest) (*websocket.CloseResponse, error) {
 	internal := internalConnectionID(pluginID, req.ConnectionId)
 
@@ -245,6 +261,11 @@ func (s *websocketService) close(ctx context.Context, pluginID string, req *webs
 }
 
 // handleMessages processes incoming WebSocket messages
+//
+// handleMessages 读取消息并回调插件。
+// 设置读超时是为了让对端静默断开时也能退出循环，避免 goroutine 泄漏；
+// 读到消息后立即清除超时，因为消息间隔本身可能很长。
+// 退出时务必从连接表中摘除自己。
 func (s *websocketService) handleMessages(internalID string, conn *WebSocketConnection) {
 	// Get the original connection ID (without plugin prefix)
 	connectionID, err := extractConnectionID(internalID)
@@ -314,6 +335,7 @@ func (s *websocketService) handleMessages(internalID string, conn *WebSocketConn
 
 // executeCallback is a common function that handles the plugin loading and execution
 // for all types of callbacks
+// executeCallback 加载插件并执行回调，统一处理日志与耗时统计。
 func (s *websocketService) executeCallback(ctx context.Context, pluginID, methodName string, fn func(context.Context, api.WebSocketCallback) error) {
 	log.Debug(ctx, "WebSocket received")
 

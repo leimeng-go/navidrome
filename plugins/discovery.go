@@ -9,6 +9,7 @@ import (
 )
 
 // PluginDiscoveryEntry represents the result of plugin discovery
+// PluginDiscoveryEntry 是单个插件的发现结果，失败原因记在 Error 中。
 type PluginDiscoveryEntry struct {
 	ID        string                 // Plugin ID (directory name)
 	Path      string                 // Resolved plugin directory path
@@ -20,6 +21,11 @@ type PluginDiscoveryEntry struct {
 
 // DiscoverPlugins scans the plugins directory and returns information about all discoverable plugins
 // This shared function eliminates duplication between ScanPlugins and plugin list commands
+//
+// DiscoverPlugins 扫描插件目录。
+// 单个插件的问题以 Error 字段随结果返回而非中断扫描，
+// 这样一个坏插件不会影响其余插件加载，CLI 也能据此列出问题原因。
+// 目录为符号链接时解析到真实路径，这是开发插件的常用方式。
 func DiscoverPlugins(pluginsDir string) []PluginDiscoveryEntry {
 	var discoveries []PluginDiscoveryEntry
 
