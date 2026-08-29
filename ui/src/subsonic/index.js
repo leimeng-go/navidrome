@@ -1,6 +1,9 @@
 import { baseUrl } from '../utils'
 import { httpClient } from '../dataProvider'
 
+// url 拼装 Subsonic API 请求地址。
+// 用 salt+token 的方式认证（不传明文密码），凭据在登录时由服务端下发。
+// options.ts 为 true 时附加时间戳，用于绕过浏览器缓存。
 const url = (command, id, options) => {
   const username = localStorage.getItem('username')
   const token = localStorage.getItem('subsonic-token')
@@ -37,6 +40,9 @@ const url = (command, id, options) => {
 
 const ping = () => httpClient(url('ping'))
 
+// scrobble 上报播放记录。
+// submission=true 表示播放完成（计入播放次数并转发给 Last.fm 等），
+// false 表示「正在播放」心跳，只更新当前播放状态。
 const scrobble = (id, time, submission = true, position = null) =>
   httpClient(
     url('scrobble', id, {
@@ -71,6 +77,9 @@ const getAvatarUrl = (username, size) =>
     }),
   )
 
+// getCoverArtUrl 根据记录类型推断封面 ID 前缀。
+// 服务端用 mf-/al-/pl-/ar- 区分歌曲、专辑、歌单与艺人封面。
+// 带上 updatedAt 作为缓存击穿参数，使封面更新后能立即生效。
 const getCoverArtUrl = (record, size, square) => {
   const options = {
     ...(record.updatedAt && { _: record.updatedAt }),

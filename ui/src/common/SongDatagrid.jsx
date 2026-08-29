@@ -59,6 +59,7 @@ const useStyles = makeStyles({
   },
 })
 
+// DiscSubtitleRow 是多碟专辑中的碟片分隔行，点击可播放整碟。
 const DiscSubtitleRow = forwardRef(
   ({ record, onClick, colSpan, contextAlwaysVisible }, ref) => {
     const isDesktop = useMediaQuery((theme) => theme.breakpoints.up('md'))
@@ -106,6 +107,8 @@ const DiscSubtitleRow = forwardRef(
 
 DiscSubtitleRow.displayName = 'DiscSubtitleRow'
 
+// SongDatagridRow 是可拖拽的歌曲行（拖入歌单）。
+// 缺失文件的行禁用点击播放并降低透明度。
 export const SongDatagridRow = ({
   record,
   children,
@@ -201,6 +204,7 @@ const SongDatagridBody = ({
   const dispatch = useDispatch()
   const { ids, data } = rest
 
+  // playSubset 播放指定碟片，跳过缺失文件的曲目。
   const playSubset = useCallback(
     (discNumber) => {
       let idsToPlay = []
@@ -217,6 +221,8 @@ const SongDatagridBody = ({
     [dispatch, data, ids],
   )
 
+  // firstTracksOfDiscs 找出每张碟的首曲，用于插入碟片分隔行。
+  // 单碟且无碟片副标题时清空集合——此时显示分隔行只会徒增干扰。
   const firstTracksOfDiscs = useMemo(() => {
     if (!ids) {
       return new Set()

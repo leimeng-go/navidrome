@@ -63,6 +63,9 @@ import { useRefresh, useDataProvider } from 'react-admin'
  * - Global refresh: { '*': '*' } or { someResource: ['*'] }
  * - Specific resources: { album: ['id1', 'id2'], song: ['id3'] }
  */
+// useResourceRefresh 收到 SSE 刷新事件时同步 react-admin 管理的资源。
+// 用 lastReceived 时间戳去重，避免同一事件被重复处理；
+// 通配符事件（如扫描完成）直接整页刷新，指定 ID 的则只重取那几条。
 export const useResourceRefresh = (...visibleResources) => {
   const [lastTime, setLastTime] = useState(Date.now())
   const refresh = useRefresh()

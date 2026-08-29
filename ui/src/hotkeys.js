@@ -1,4 +1,5 @@
 import config from './config'
+// keyMap 定义全局快捷键，收藏相关的快捷键随功能开关一起启用。
 const keyMap = {
   SHOW_HELP: { name: 'show_help', sequence: 'shift+?', group: 'Global' },
   TOGGLE_MENU: { name: 'toggle_menu', sequence: 'm', group: 'Global' },

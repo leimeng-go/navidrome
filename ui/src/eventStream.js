@@ -4,6 +4,8 @@ import { processEvent, serverDown, streamReconnected } from './actions'
 import { REST_URL } from './consts'
 import config from './config'
 
+// newEventStream 创建 SSE 连接。
+// EventSource 无法自定义请求头，故 token 只能放在查询参数里传递。
 const newEventStream = async () => {
   let url = baseUrl(`${REST_URL}/events`)
   if (localStorage.getItem('token')) {
@@ -16,6 +18,8 @@ let eventStream
 let reconnectTimer
 const RECONNECT_DELAY = 5000
 
+// setupHandlers 注册各类服务端事件。
+// 扫描状态更新频繁，做节流处理以免频繁重渲染。
 const setupHandlers = (stream, dispatchFn) => {
   stream.addEventListener('serverStart', eventHandler(dispatchFn))
   stream.addEventListener('scanStatus', throttledEventHandler(dispatchFn))
@@ -33,6 +37,7 @@ const setupHandlers = (stream, dispatchFn) => {
   }
 }
 
+// scheduleReconnect 延迟重连，加锁避免多次错误事件触发重复重连。
 const scheduleReconnect = (dispatchFn) => {
   if (!reconnectTimer) {
     reconnectTimer = setTimeout(() => {
@@ -42,6 +47,7 @@ const scheduleReconnect = (dispatchFn) => {
   }
 }
 
+// connect 建立连接并广播重连事件，让各视图刷新可能已过期的数据。
 const connect = async (dispatchFn) => {
   try {
     const stream = await newEventStream()
@@ -101,6 +107,8 @@ const startEventStreamNew = async (dispatchFn) => {
   return connect(dispatchFn)
 }
 
+// startEventStream 启动事件流，未登录时直接跳过。
+// 新旧两套实现由 devNewEventStream 开关切换，新实现增加了自动重连。
 const startEventStream = async (dispatchFn) => {
   if (!localStorage.getItem('is-authenticated')) {
     return Promise.resolve()

@@ -31,6 +31,8 @@ import { keyMap } from '../hotkeys'
 import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 
+// Player 是常驻的全局播放器组件。
+// 它挂在 react-admin 的资源列表里，从而在切换页面时不被卸载，保证播放不中断。
 const Player = () => {
   const theme = useCurrentTheme()
   const translate = useTranslate()
@@ -67,11 +69,14 @@ const Player = () => {
     if (
       context === null &&
       audioInstance &&
+      // Web Audio API 只能对同一个 audio 元素创建一次 source，
+      // 故只在首次且确实启用了回放增益时才建立音频链路。
       config.enableReplayGain &&
       'AudioContext' in window &&
       (gainInfo.gainMode === 'album' || gainInfo.gainMode === 'track')
     ) {
       const ctx = new AudioContext()
+      // 电台是跨域流，不设置 crossOrigin 会让 Firefox 拒绝接入音频处理链路。
       // we need this to support radios in firefox
       audioInstance.crossOrigin = 'anonymous'
       const source = ctx.createMediaElementSource(audioInstance)
@@ -160,6 +165,9 @@ const Player = () => {
     return idx !== null ? playerState.queue[idx + 1] : null
   }, [playerState])
 
+  // onAudioProgress 处理播放进度：达到阈值后预加载下一首并上报播放记录。
+  // 阈值遵循 Last.fm 惯例——播放过半或超过 4 分钟才算一次有效收听。
+  // 电台无固定时长，不参与统计。
   const onAudioProgress = useCallback(
     (info) => {
       if (info.ended) {
@@ -193,12 +201,15 @@ const Player = () => {
     [startTime, scrobbled, nextSong, preloaded],
   )
 
+  // 存平方根值：人耳对音量的感知是对数的，
+  // 这样滑块的线性移动才对应听感上均匀的变化。
   const onAudioVolumeChange = useCallback(
     // sqrt to compensate for the logarithmic volume
     (volume) => dispatch(setVolume(Math.sqrt(volume))),
     [dispatch],
   )
 
+  // onAudioPlay 处理开始播放：恢复音频上下文、上报「正在播放」、更新标题与通知。
   const onAudioPlay = useCallback(
     (info) => {
       // Do this to start the context; on chrome-based browsers, the context
@@ -238,6 +249,7 @@ const Player = () => {
     [context, dispatch, showNotifications, startTime],
   )
 
+  // onAudioPlayTrackChange 切歌时重置计时与上报标记，使新歌重新走一遍统计判定。
   const onAudioPlayTrackChange = useCallback(() => {
     if (scrobbled) {
       setScrobbled(false)
@@ -252,6 +264,8 @@ const Player = () => {
     [dispatch],
   )
 
+  // onAudioEnded 播放结束时顺带调用 keepalive，
+  // 让长时间只听歌不操作界面的会话不至于因空闲而被登出。
   const onAudioEnded = useCallback(
     (currentPlayId, audioLists, info) => {
       setScrobbled(false)
@@ -271,6 +285,8 @@ const Player = () => {
     }
   }, [])
 
+  // onBeforeDestroy 拦截播放器的关闭动作：
+  // 改为清空队列（reject 阻止组件真正销毁），保持播放器实例常驻。
   const onBeforeDestroy = useCallback(() => {
     return new Promise((resolve, reject) => {
       dispatch(clearQueue())
@@ -287,6 +303,7 @@ const Player = () => {
     [audioInstance, playerState],
   )
 
+  // 移动端音量由系统音量键控制，应用内固定为最大，避免两级衰减导致声音过小。
   useEffect(() => {
     if (isMobilePlayer && audioInstance) {
       audioInstance.volume = 1

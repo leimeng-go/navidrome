@@ -7,6 +7,7 @@ export const M3U_MIME_TYPE = 'audio/x-mpegurl'
 
 export const AUTO_THEME_ID = 'AUTO_THEME_ID'
 
+// 拖拽类型，用于把歌曲/专辑/艺人拖入播放列表。
 export const DraggableTypes = {
   SONG: 'song',
   ALBUM: 'album',
@@ -24,6 +25,7 @@ DraggableTypes.ALL.push(
 
 export const DEFAULT_SHARE_BITRATE = 128
 
+// 分享链接可选的码率档位。
 export const BITRATE_CHOICES = [
   32, 48, 64, 80, 96, 112, 128, 160, 192, 256, 320,
 ].map((b) => ({ id: b, name: b.toString() }))

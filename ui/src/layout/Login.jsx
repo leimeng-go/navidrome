@@ -312,6 +312,8 @@ const FormSignUp = ({ loading, handleSubmit, validate }) => {
   )
 }
 
+// Login 是登录页。
+// 首次启动（数据库中还没有用户）时改为渲染创建管理员的表单。
 const Login = ({ location }) => {
   const [loading, setLoading] = useState(false)
   const translate = useTranslate()
@@ -319,6 +321,7 @@ const Login = ({ location }) => {
   const login = useLogin()
   const dispatch = useDispatch()
 
+  // 登录前清空播放队列，避免把上一个用户的队列带入新会话。
   const handleSubmit = useCallback(
     (auth) => {
       setLoading(true)
@@ -354,6 +357,8 @@ const Login = ({ location }) => {
     [translate],
   )
 
+  // validateSignup 在登录校验之上追加规则：
+  // 用户名限定为单词字符，因为它会出现在 URL 与部分客户端的路径中。
   const validateSignup = useCallback(
     (values) => {
       const errors = validateLogin(values)

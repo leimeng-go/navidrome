@@ -242,6 +242,7 @@ NowPlayingList.propTypes = {
 }
 
 // Main NowPlayingPanel component
+// NowPlayingPanel 展示当前所有客户端的播放情况（管理员视角）。
 const NowPlayingPanel = () => {
   const dispatch = useDispatch()
   const count = useSelector((state) => state.activity.nowPlayingCount)
@@ -275,6 +276,8 @@ const NowPlayingPanel = () => {
     }
   }, [isSmallScreen, handleMenuClose])
 
+  // getArtistLink 生成艺人跳转链接。
+  // 艺人页未启用、或对象是「群星」这类聚合艺人时，退回到带筛选条件的专辑列表。
   const getArtistLink = useCallback((artistId) => {
     if (!artistId) return null
     return config.devShowArtistPage && artistId !== config.variousArtistsId

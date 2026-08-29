@@ -10,6 +10,7 @@ export const formatBytes = (bytes, decimals = 2) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]
 }
 
+// formatDuration 格式化为 [d:]hh:mm:ss，前导的零位分段会被省略。
 export const formatDuration = (d) => {
   d = Math.round(d)
   const days = Math.floor(d / 86400)
@@ -25,6 +26,7 @@ export const formatDuration = (d) => {
   return `${days > 0 ? days + ':' : ''}${f}`
 }
 
+// formatDuration2 格式化为 "1d 2h 3m" 形式，最多显示三级，用于统计类展示。
 export const formatDuration2 = (totalSeconds) => {
   if (totalSeconds == null || totalSeconds < 0) {
     return '0s'
@@ -61,6 +63,7 @@ export const formatDuration2 = (totalSeconds) => {
   return parts.join(' ')
 }
 
+// formatShortDuration 格式化纳秒级耗时（Go 的 time.Duration 序列化为纳秒）。
 export const formatShortDuration = (ns) => {
   // Convert nanoseconds to seconds
   const seconds = ns / 1e9
@@ -81,6 +84,9 @@ export const formatShortDuration = (ns) => {
   return `${secs}s`
 }
 
+// formatFullDate 按日期字符串的精度自适应显示。
+// 音乐标签中的日期常只精确到年或年月（如 "1969"、"1969-08"），
+// 按短横线数量决定展示到年、月还是日；格式无法识别时返回空串。
 export const formatFullDate = (date, locale) => {
   const dashes = date.split('-').length - 1
   let options = {

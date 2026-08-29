@@ -58,6 +58,7 @@ const useStyles = makeStyles((theme) => ({
 const getUptime = (serverStart) =>
   formatDuration((Date.now() - serverStart.startTime) / 1000)
 
+// Uptime 每秒刷新一次运行时长显示。
 const Uptime = () => {
   const serverStart = useSelector((state) => state.activity.serverStart)
   const [uptime, setUptime] = useState(getUptime(serverStart))
@@ -67,6 +68,7 @@ const Uptime = () => {
   return <span>{uptime}</span>
 }
 
+// ActivityPanel 显示服务端状态与扫描进度，并提供手动触发扫描的入口。
 const ActivityPanel = () => {
   const serverStart = useSelector((state) => state.activity.serverStart)
   const up = serverStart.startTime
@@ -87,6 +89,7 @@ const ActivityPanel = () => {
   const open = Boolean(anchorEl)
   useInitialScanStatus()
 
+  // 打开面板即视为已知晓错误，之后不再持续高亮告警。
   const handleMenuOpen = (event) => {
     if (scanStatus.error) {
       setAcknowledgedError(scanStatus.error)
@@ -97,6 +100,8 @@ const ActivityPanel = () => {
   const handleMenuClose = () => setAnchorEl(null)
   const triggerScan = (full) => () => subsonic.startScan({ fullScan: full })
 
+  // 服务端版本与前端加载时的版本不一致，说明服务已升级，
+  // 提示用户刷新页面以获取新的前端资源。
   useEffect(() => {
     if (serverStart.version && serverStart.version !== config.version) {
       notify('ra.notification.new_version', 'info', {}, false, 604800000 * 50)

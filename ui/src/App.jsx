@@ -43,6 +43,8 @@ import { HTML5Backend } from 'react-dnd-html5-backend'
 import { DndProvider } from 'react-dnd'
 import missing from './missing/index.js'
 
+// 使用 hash 路由：Navidrome 可能被部署在任意子路径下，
+// hash 模式无需服务端为前端路由做额外的 rewrite 配置。
 const history = createHashHistory()
 
 if (config.gaTrackingId) {
@@ -80,6 +82,9 @@ const App = () => (
   </Provider>
 )
 
+// Admin 按权限与配置开关动态注册资源。
+// 非管理员仍注册空的 transcoding 资源：
+// 播放器需要引用它做数据关联，缺失会导致 react-admin 报错。
 const Admin = (props) => {
   useChangeThemeColor()
   /* eslint-disable react/jsx-key */
@@ -154,6 +159,8 @@ const Admin = (props) => {
   /* eslint-enable react/jsx-key */
 }
 
+// AppWithHotkeys 是应用入口。
+// 分享页走完全独立的精简播放器，不加载后台管理界面（无需登录）。
 const AppWithHotkeys = () => {
   let language = localStorage.getItem('locale') || 'en'
   document.documentElement.lang = language

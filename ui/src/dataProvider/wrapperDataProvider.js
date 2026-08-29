@@ -9,6 +9,9 @@ const isAdmin = () => {
   return role === 'admin'
 }
 
+// getSelectedLibraries 读取当前选中的曲库。
+// 会与用户实际拥有的曲库做校验，防止权限变更后仍带着失效的旧 ID 过滤；
+// 只有一个曲库时返回空数组，无需过滤。
 const getSelectedLibraries = () => {
   try {
     const state = JSON.parse(localStorage.getItem('state'))
@@ -33,6 +36,7 @@ const getSelectedLibraries = () => {
 }
 
 // Function to apply library filtering to appropriate resources
+// applyLibraryFilter 给内容类资源附加曲库过滤条件。
 const applyLibraryFilter = (resource, params) => {
   // Content resources that should be filtered by selected libraries
   const filteredResources = ['album', 'song', 'artist', 'playlistTrack', 'tag']
@@ -51,6 +55,8 @@ const applyLibraryFilter = (resource, params) => {
   return params
 }
 
+// mapResource 把前端资源名映射为实际接口路径并补充过滤条件。
+// 非管理员强制过滤掉 missing（已丢失文件），这类记录只对管理员有意义。
 const mapResource = (resource, params) => {
   switch (resource) {
     // /api/playlistTrack?playlist_id=123  => /api/playlist/123/tracks
@@ -83,6 +89,8 @@ const mapResource = (resource, params) => {
   }
 }
 
+// callDeleteMany 批量删除。
+// 部分接口不支持 react-admin 默认的批量删除格式，故用重复的 id 查询参数手动调用。
 const callDeleteMany = (resource, params) => {
   const ids = (params.ids || []).map((id) => `id=${id}`)
   const query = ids.length > 0 ? `?${ids.join('&')}` : ''
@@ -92,6 +100,7 @@ const callDeleteMany = (resource, params) => {
 }
 
 // Helper function to handle user-library associations
+// handleUserLibraryAssociation 单独调接口设置用户的曲库授权。
 const handleUserLibraryAssociation = async (userId, libraryIds) => {
   if (!libraryIds || libraryIds.length === 0) {
     return // Admin users or users without library assignments
@@ -109,6 +118,8 @@ const handleUserLibraryAssociation = async (userId, libraryIds) => {
 }
 
 // Enhanced user creation that handles library associations
+// createUser 先建用户再设置曲库授权：授权接口需要已存在的用户 ID。
+// 管理员默认可访问全部曲库，无需单独授权。
 const createUser = async (params) => {
   const { data } = params
   const { libraryIds, ...userData } = data
@@ -145,6 +156,8 @@ const updateUser = async (params) => {
   return userResponse
 }
 
+// wrapperDataProvider 包装标准 dataProvider，
+// 统一处理资源路径映射、曲库过滤与用户曲库授权等 Navidrome 特有逻辑。
 const wrapperDataProvider = {
   ...dataProvider,
   getList: (resource, params) => {

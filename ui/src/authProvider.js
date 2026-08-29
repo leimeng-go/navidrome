@@ -14,6 +14,9 @@ if (config.auth) {
   }
 }
 
+// storeAuthenticationInfo 把认证信息写入 localStorage。
+// 同时保存 subsonic 的 salt 与 token：内置播放器走 Subsonic API 取流，
+// 该套接口用的是独立于 JWT 的认证方式。
 function storeAuthenticationInfo(authInfo) {
   authInfo.token && localStorage.setItem('token', authInfo.token)
   localStorage.setItem('userId', authInfo.id)
@@ -26,6 +29,7 @@ function storeAuthenticationInfo(authInfo) {
   localStorage.setItem('is-authenticated', 'true')
 }
 
+// authProvider 是 react-admin 的认证适配器。
 const authProvider = {
   login: ({ username, password }) => {
     let url = baseUrl('/auth/login')
@@ -96,6 +100,7 @@ const authProvider = {
   },
 }
 
+// removeItems 清除全部认证痕迹，登出与鉴权失效时调用。
 const removeItems = () => {
   localStorage.removeItem('token')
   localStorage.removeItem('userId')

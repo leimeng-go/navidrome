@@ -33,6 +33,8 @@ const useStyles = makeStyles({
   },
 })
 
+// MoreButton 是行尾的菜单按钮。
+// 文件缺失的曲目没有可执行的操作，按钮改为问号并直接弹出说明信息。
 const MoreButton = ({ record, onClick, info }) => {
   const handleClick = record.missing
     ? (e) => {
@@ -176,6 +178,8 @@ export const SongContextMenu = ({
     e.stopPropagation()
   }
 
+  // handleItemClick 执行菜单项动作。
+  // 「所在歌单」需要保持主菜单展开以承载二级菜单，其余动作点完即关闭。
   const handleItemClick = (e) => {
     e.preventDefault()
     const key = e.target.getAttribute('value')

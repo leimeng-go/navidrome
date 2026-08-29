@@ -11,6 +11,7 @@ import { adminReducer, adminSaga, USER_LOGOUT } from 'react-admin'
 import throttle from 'lodash.throttle'
 import { loadState, saveState } from './persistState'
 
+// createAdminStore 创建 redux store，整合 react-admin、路由与自定义 reducer。
 const createAdminStore = ({
   authProvider,
   dataProvider,
@@ -22,6 +23,7 @@ const createAdminStore = ({
     router: connectRouter(history),
     ...customReducers,
   })
+  // 登出时把整个 state 置为 undefined，确保不残留上一个用户的数据。
   const resettableAppReducer = (state, action) =>
     reducer(action.type !== USER_LOGOUT ? state : undefined, action)
 
@@ -40,6 +42,8 @@ const createAdminStore = ({
       })) ||
     compose
 
+  // 恢复播放位置：savedPlayIndex 是持久化的字段，
+  // playIndex 是播放器运行时字段，需在启动时同步一次。
   const persistedState = loadState()
   if (persistedState?.player?.savedPlayIndex) {
     persistedState.player.playIndex = persistedState.player.savedPlayIndex
@@ -52,6 +56,8 @@ const createAdminStore = ({
     ),
   )
 
+  // 只持久化必要字段（主题、曲库、播放队列等），
+  // 并做节流，避免播放进度等高频更新反复写 localStorage。
   store.subscribe(
     throttle(() => {
       const state = store.getState()

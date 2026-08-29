@@ -34,6 +34,8 @@ const useStyles = makeStyles((theme) => ({
   },
 }))
 
+// translatedResourceName 取资源的本地化名称，
+// 缺少翻译时退回到根据资源名生成的可读形式。
 const translatedResourceName = (resource, translate) =>
   translate(`resources.${resource.name}.name`, {
     smart_count: 2,
@@ -46,6 +48,8 @@ const translatedResourceName = (resource, translate) =>
         : humanize(pluralize(resource.name)),
   })
 
+// Menu 是侧边栏菜单。
+// 播放队列非空时底部留出空间，避免菜单项被播放器条遮挡。
 const Menu = ({ dense = false }) => {
   const open = useSelector((state) => state.admin.ui.sidebarOpen)
   const translate = useTranslate()

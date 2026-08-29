@@ -5,6 +5,8 @@ const initialState = {
   selectedLibraries: [], // Empty means "all accessible libraries"
 }
 
+// libraryReducer 维护用户可访问的曲库与当前筛选的曲库。
+// selectedLibraries 为空表示「全部可访问曲库」，不额外过滤。
 export const libraryReducer = (previousState = initialState, payload) => {
   const { type, data } = payload
   switch (type) {

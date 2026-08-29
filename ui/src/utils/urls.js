@@ -1,5 +1,6 @@
 import config from '../config'
 
+// baseUrl 拼接部署路径前缀，支持部署在子目录下。
 export const baseUrl = (path) => {
   const base = config.baseURL || ''
   const parts = [base]
@@ -7,6 +8,9 @@ export const baseUrl = (path) => {
   return parts.join('/')
 }
 
+// shareUrl 生成分享链接。
+// 配置了 shareURL 时用它（通常是对外可访问的公网地址），
+// 否则退回当前站点地址。
 export const shareUrl = (path) => {
   if (config.shareURL !== '') {
     const base = config.shareURL || ''

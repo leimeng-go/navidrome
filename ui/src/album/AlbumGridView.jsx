@@ -101,6 +101,7 @@ const useCoverStyles = makeStyles({
   },
 })
 
+// getColsForWidth 按屏幕宽度决定网格列数。
 const getColsForWidth = (width) => {
   if (width === 'xs') return 2
   if (width === 'sm') return 3

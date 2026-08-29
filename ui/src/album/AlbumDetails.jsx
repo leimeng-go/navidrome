@@ -115,6 +115,7 @@ const useStyles = makeStyles(
   },
 )
 
+// useGetHandleGenreClick 生成风格筛选链接，每页条数随屏幕宽度自适应。
 const useGetHandleGenreClick = (width) => {
   const [perPage] = useAlbumsPerPage(width)
 
@@ -149,6 +150,7 @@ const GenreList = () => {
   )
 }
 
+// Details 汇总专辑的元信息行（年份、时长、大小等），按屏幕尺寸决定显示密度。
 export const Details = (props) => {
   const isXsmall = useMediaQuery((theme) => theme.breakpoints.down('xs'))
   const translate = useTranslate()

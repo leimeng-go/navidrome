@@ -83,6 +83,8 @@ const useStyles = makeStyles(
   { name: 'RaList' },
 )
 
+// ReorderableList 仅在可编辑时启用拖拽排序；
+// 智能歌单等只读歌单的顺序由规则决定，不允许手工调整。
 const ReorderableList = ({ readOnly, children, ...rest }) => {
   if (readOnly) {
     return children
@@ -90,6 +92,7 @@ const ReorderableList = ({ readOnly, children, ...rest }) => {
   return <ReactDragListView {...rest}>{children}</ReactDragListView>
 }
 
+// PlaylistSongs 是歌单曲目列表，支持拖拽排序与批量操作。
 const PlaylistSongs = ({ playlistId, readOnly, actions, ...props }) => {
   const listContext = useListContext()
   const { data, ids, selectedIds, onUnselectItems, refetch, setPage } =
@@ -102,6 +105,7 @@ const PlaylistSongs = ({ playlistId, readOnly, actions, ...props }) => {
   const version = useVersion()
   useResourceRefresh('song', 'playlist')
 
+  // 切换歌单时回到第一页并滚动到顶部，否则会停留在上一个歌单的翻页位置。
   useEffect(() => {
     setPage(1)
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -116,6 +120,8 @@ const PlaylistSongs = ({ playlistId, readOnly, actions, ...props }) => {
     [playlistId, refetch],
   )
 
+  // reorder 提交拖拽后的新位置。
+  // 服务端按 insert_before 语义重排，前端不做本地推算以免与并发修改冲突。
   const reorder = useCallback(
     (playlistId, id, newPos) => {
       dataProvider

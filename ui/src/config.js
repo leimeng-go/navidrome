@@ -40,6 +40,7 @@ const defaultConfig = {
   enableInspect: true,
 }
 
+// 优先使用服务端注入的配置；解析失败（如开发模式下未注入）时退回默认值。
 let config
 
 try {
@@ -52,6 +53,7 @@ try {
   config = defaultConfig
 }
 
+// shareInfo 仅在分享页面由服务端注入，其余页面为 null。
 export let shareInfo
 
 try {

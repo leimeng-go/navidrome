@@ -5,10 +5,15 @@ import config from '../config'
 import { jwtDecode } from 'jwt-decode'
 import { removeHomeCache } from '../utils/removeHomeCache'
 
+// 使用自定义头而非标准 Authorization：
+// 避免与反向代理注入的认证头冲突。
 const customAuthorizationHeader = 'X-ND-Authorization'
 const clientUniqueIdHeader = 'X-ND-Client-Unique-Id'
+// 每个浏览器标签页一个唯一 ID，服务端据此区分播放会话。
 const clientUniqueId = uuidv4()
 
+// httpClient 统一注入认证头，并处理服务端下发的续期 token，
+// 使长时间使用的会话不会因 JWT 过期而被登出。
 const httpClient = (url, options = {}) => {
   url = baseUrl(url)
   if (!options.headers) {

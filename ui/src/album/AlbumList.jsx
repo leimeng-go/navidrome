@@ -174,8 +174,11 @@ const AlbumListTitle = ({ albumListType }) => {
   return <Title subTitle={title} args={{ smart_count: 2 }} />
 }
 
+// 随机排序用的种子：与 react-admin 的 version 组合，
+// 保证同一次浏览中翻页顺序稳定，而手动刷新会重新洗牌。
 const randomStartingSeed = Math.random().toString()
 
+// AlbumList 是专辑列表，路径后缀决定展示哪种榜单（最新、最多播放等）。
 const AlbumList = (props) => {
   const { width } = props
   const albumView = useSelector((state) => state.albumView)

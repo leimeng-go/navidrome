@@ -30,6 +30,9 @@ const pad = (value) => {
   }
 }
 
+// mapToAudioLists 把后端返回的歌曲记录转换成播放器组件所需的格式。
+// 每条加入队列的记录都生成新的 uuid：同一首歌可以在队列里出现多次，
+// 需要用 uuid 而非 trackId 来唯一标识队列项。
 const mapToAudioLists = (item) => {
   // If item comes from a playlist, trackId is mediaFileId
   const trackId = item.mediaFileId || item.id
@@ -49,6 +52,8 @@ const mapToAudioLists = (item) => {
   const { lyrics } = item
   let lyricText = ''
 
+  // 播放器只认 LRC 文本，故把结构化歌词转回 [mm:ss.xx] 格式，
+  // 且只取带时间轴的版本（未同步的歌词无法逐行高亮）。
   if (lyrics) {
     const structured = JSON.parse(lyrics)
     for (const structuredLyric of structured) {
@@ -123,6 +128,8 @@ const reduceAddTracks = (state, { data }) => {
   return { ...state, queue, clear: false }
 }
 
+// reducePlayNext 把歌曲插入到当前播放项之后。
+// 若当前项已不在队列中（如队列被替换），则退化为追加到队尾。
 const reducePlayNext = (state, { data }) => {
   const newQueue = []
   const current = state.current || {}
@@ -165,6 +172,9 @@ const reduceSyncQueue = (state, { data: { audioInfo, audioLists } }) => {
   }
 }
 
+// reduceCurrent 更新当前播放项。
+// 记录 savedPlayIndex 以便刷新页面后能恢复到同一首歌；
+// playIndex 置为 undefined，避免反过来干扰播放器自身的进度控制。
 const reduceCurrent = (state, { data }) => {
   const current = data.ended ? {} : data
   const savedPlayIndex = state.queue.findIndex(
